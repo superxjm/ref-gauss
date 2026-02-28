@@ -124,7 +124,7 @@ class OptimizationParams(ParamGroup):
         # Regularization Parameters
         self.lambda_dssim = 0.2
         self.lambda_dist = 0.0
-        self.lambda_normal_render_depth = 0.05
+        self.lambda_normal_render_depth = 0.5
         self.lambda_normal_smooth = 0.0
         self.lambda_depth_smooth = 0.0
 
@@ -180,7 +180,7 @@ class OptimizationParams(ParamGroup):
         self.env_scope_radius = 0.0
         
         # SRGB Transformation
-        self.srgb = False
+        self.srgb = True
 
         # mesh
         self.voxel_size = -1.0

@@ -62,6 +62,12 @@ class Camera(nn.Module):
         # NOTE: if camera has significant center offset (cx,cy!=W/2,H/2), MUST USE getProjectionMatrixCorrect !!
         #HWK = None
         self.world_view_transform = torch.tensor(getWorld2View2(R, T, trans, scale)).transpose(0, 1).cuda()
+        # print(trans)
+        # print(scale)
+        # print(R)
+        # print(T)
+        # print(self.world_view_transform)
+        # input("trans")
         if HWK is None:
             self.projection_matrix = getProjectionMatrix(znear=self.znear, zfar=self.zfar, fovX=self.FoVx, fovY=self.FoVy).transpose(0,1).cuda()
         else:

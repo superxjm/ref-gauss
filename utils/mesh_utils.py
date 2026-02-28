@@ -131,7 +131,7 @@ class GaussianExtractor(object):
         c2ws = np.array([np.linalg.inv(np.asarray((cam.world_view_transform.T).cpu().numpy())) for cam in self.viewpoint_stack])
         poses = c2ws[:,:3,:] @ np.diag([1, -1, -1, 1])
         center = (focus_point_fn(poses))
-        self.radius = np.linalg.norm(c2ws[:,:3,3] - center, axis=-1).min()
+        self.radius = np.linalg.norm(c2ws[:,:3,3] - center, axis=-1).mean()
         self.center = torch.from_numpy(center).float().cuda()
         print(f"The estimated bounding radius is {self.radius:.2f}")
         print(f"Use at least {2.0 * self.radius:.2f} for depth_trunc")

@@ -53,7 +53,7 @@ def compute_2dgs_normal_and_regularizations(allmap, viewpoint_camera, pipe):
     
     # remember to multiply with accum_alpha since render_normal is unnormalized.
     surf_normal = surf_normal * render_alpha.detach()
-    
+
     return {
         'render_alpha': render_alpha,
         'render_normal': render_normal,
@@ -167,6 +167,9 @@ def render_initial(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.
     if srgb: 
         rendered_image = linear_to_srgb(rendered_image)
     final_image = rendered_image + bg_color[:, None, None] * (1 - render_alpha)
+
+    render_normal  = torch.nn.functional.normalize(render_normal , dim=0) 
+    final_image = torch.clamp_max(final_image, 1.0)
 
     rets =  {"render": final_image,
         "viewspace_points": means2D,
@@ -304,7 +307,6 @@ def render_surfel(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.T
         sh2indirect = eval_sh(3, shs_indirect, reflection)
         indirect = torch.clamp_min(sh2indirect, 0.0)
     
-
     contrib, rendered_image, rendered_features, radii, allmap = rasterizer(
         means3D = means3D,
         means2D = means2D,
@@ -316,7 +318,6 @@ def render_surfel(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.T
         rotations = rotations,
         cov3D_precomp = cov3D_precomp,
     )
-
 
     base_color = rendered_image
     refl_strength = rendered_features[:1]
@@ -333,18 +334,25 @@ def render_surfel(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.T
     surf_depth = regularizations['surf_depth']
     surf_normal = regularizations['surf_normal']
 
-
     # Use normal map computed in 2DGS pipeline to perform reflection query
+    render_normal  = torch.nn.functional.normalize(render_normal , dim=0) 
     normal_map = render_normal.permute(1,2,0)
-    normal_map = normal_map / render_alpha.permute(1,2,0).clamp_min(1e-6)
+    # normal_map = normal_map / render_alpha.permute(1,2,0).clamp_min(1e-6)
     
+    # print(viewpoint_camera.R)
+    # print(viewpoint_camera.T)
+    # print(viewpoint_camera.world_view_transform)
+    # input('viewpoint_camera')
+    c2w = np.linalg.inv(viewpoint_camera.world_view_transform.T.cpu().numpy())
     if opt.indirect:
-        specular, extra_dict = get_specular_color_surfel(pc.get_envmap, albedo.permute(1,2,0), viewpoint_camera.HWK, viewpoint_camera.R, viewpoint_camera.T, normal_map, render_alpha.permute(1,2,0), refl_strength=refl_strength.permute(1,2,0), roughness=roughness.permute(1,2,0), pc=pc, surf_depth=surf_depth, indirect_light=indirect_light.permute(1,2,0))
+        specular, extra_dict = get_specular_color_surfel(pc.get_envmap, albedo.permute(1,2,0), viewpoint_camera.HWK, viewpoint_camera.R, viewpoint_camera.T, c2w, normal_map, render_alpha.permute(1,2,0), refl_strength=refl_strength.permute(1,2,0), roughness=roughness.permute(1,2,0), pc=pc, surf_depth=surf_depth, indirect_light=indirect_light.permute(1,2,0))
     else:
-        specular, extra_dict = get_specular_color_surfel(pc.get_envmap, albedo.permute(1,2,0), viewpoint_camera.HWK, viewpoint_camera.R, viewpoint_camera.T, normal_map, render_alpha.permute(1,2,0), refl_strength=refl_strength.permute(1,2,0), roughness=roughness.permute(1,2,0), pc=pc, surf_depth=surf_depth)
+        specular, extra_dict = get_specular_color_surfel(pc.get_envmap, albedo.permute(1,2,0), viewpoint_camera.HWK, viewpoint_camera.R, viewpoint_camera.T, c2w, normal_map, render_alpha.permute(1,2,0), refl_strength=refl_strength.permute(1,2,0), roughness=roughness.permute(1,2,0), pc=pc, surf_depth=surf_depth)
 
     # Integrate the final image
-    final_image = (1-refl_strength) * base_color + specular 
+    # final_image = (1-refl_strength) * base_color + specular 
+    final_image = base_color + specular 
+    # refl_strength -> 0
     
     # Transform linear rgb to srgb with nonlinearly distribution between 0 to 1
     if srgb: 
@@ -354,6 +362,10 @@ def render_surfel(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.T
 
 
     final_image = final_image + bg_color[:, None, None] * (1 - render_alpha)
+  
+    render_normal  = torch.nn.functional.normalize(render_normal , dim=0) 
+    final_image = torch.clamp_max(final_image, 1.0)
+
     if opt.indirect:
         indirect_color = (1-refl_strength) * base_color + extra_dict['indirect_color']
         indirect_color = indirect_color + bg_color[:, None, None] * (1 - render_alpha)
@@ -571,8 +583,8 @@ def render_volume(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.T
 
     final_image = full_color + bg_color[:, None, None] * (1 - render_alpha)
     
-
-
+    render_normal  = torch.nn.functional.normalize(render_normal , dim=0) 
+    final_image = torch.clamp_max(final_image, 1.0)
 
     # Those Gaussians that were frustum culled or had a radius of 0 were not visible.
     # They will be excluded from value updates used in the splitting criteria.

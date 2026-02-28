@@ -225,11 +225,25 @@ def readCamerasFromTransforms(path, transformsfile, white_background, extension=
 
             # NeRF 'transform_matrix' is a camera-to-world transform
             c2w = np.array(frame["transform_matrix"])
+            c2w_R = c2w[:3,:3]
+            U, Sigma, Vt = np.linalg.svd(c2w_R)
+            Sigma_matrix = np.diag(Sigma)
+            # print(Sigma_matrix)
+            # c2w[:3,:3] = U @ Vt
+            # print(c2w_R)
+            # print(c2w_R @ c2w_R.T)
+            input()
+
             # change from OpenGL/Blender camera axes (Y up, Z back) to COLMAP (Y down, Z forward)
             c2w[:3, 1:3] *= -1
 
             # get the world-to-camera transform and set R, T
             w2c = np.linalg.inv(c2w)
+            w2c_R = w2c[:3,:3]
+            # print(f'w2c_R: {w2c_R}')
+            # print(f'RR^T: {w2c_R @ w2c_R.T}')
+            # print(path, frame["file_path"] + extension)
+            # input()
             ### NOTE !!!!!
             # Here R has been transposed, R = w2c.T
             R = np.transpose(w2c[:3,:3])  # R is stored transposed due to 'glm' in CUDA code
@@ -239,13 +253,13 @@ def readCamerasFromTransforms(path, transformsfile, white_background, extension=
             image_name = Path(cam_name).stem
             image = Image.open(image_path)
 
-            im_data = np.array(image.convert("RGBA"))
+            # im_data = np.array(image.convert("RGBA"))
 
-            bg = np.array([1,1,1]) if white_background else np.array([0, 0, 0])
+            # bg = np.array([1,1,1]) if white_background else np.array([0, 0, 0])
 
-            norm_data = im_data / 255.0
-            arr = norm_data[:,:,:3] * norm_data[:, :, 3:4] + bg * (1 - norm_data[:, :, 3:4])
-            image = Image.fromarray(np.array(arr*255.0, dtype=np.byte), "RGB")
+            # norm_data = im_data / 255.0
+            # arr = norm_data[:,:,:3] * norm_data[:, :, 3:4] + bg * (1 - norm_data[:, :, 3:4])
+            # image = Image.fromarray(np.array(arr*255.0, dtype=np.byte), "RGB")
             fo = fov2focal(fovx, image.size[0])
 
             W,H = image.size[0], image.size[1]

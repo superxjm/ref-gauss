@@ -126,4 +126,4 @@ class EnvLight(torch.nn.Module):
 
         light = light.view(*prefix, -1)
         
-        return torch.sigmoid(light)
+        return torch.sigmoid(light) * 10.0

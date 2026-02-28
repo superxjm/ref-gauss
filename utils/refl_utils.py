@@ -4,6 +4,8 @@ import nvdiffrast.torch as dr
 from .general_utils import safe_normalize, flip_align_view
 from utils.sh_utils import eval_sh
 import kornia
+import open3d as o3d
+import os
 
 env_rayd1 = None
 FG_LUT = torch.from_numpy(np.fromfile("assets/bsdf_256_256.bin", dtype=np.float32).reshape(1, 256, 256, 2)).cuda()
@@ -65,7 +67,7 @@ def sample_camera_rays(HWK, R, T):
         pixel_camera = np.dot(xy1, np.linalg.inv(K).T)
         pixel_camera = torch.tensor(pixel_camera).cuda()
 
-    rays_o = (-R.T @ T.unsqueeze(-1)).flatten()
+    rays_o = (-torch.inverse(R) @ T.unsqueeze(-1)).flatten()
     pixel_world = (pixel_camera - T[None, None]).reshape(-1, 3) @ R
     rays_d = pixel_world - rays_o[None]
     rays_d = rays_d / torch.norm(rays_d, dim=1, keepdim=True)
@@ -86,7 +88,7 @@ def sample_camera_rays_unnormalize(HWK, R, T):
         pixel_camera = np.dot(xy1, np.linalg.inv(K).T)
         pixel_camera = torch.tensor(pixel_camera).cuda()
 
-    rays_o = (-R.T @ T.unsqueeze(-1)).flatten()
+    rays_o = (-torch.inverse(R) @ T.unsqueeze(-1)).flatten()
     pixel_world = (pixel_camera - T[None, None]).reshape(-1, 3) @ R
     rays_d = pixel_world - rays_o[None]
     rays_d = rays_d.reshape(H,W,3)
@@ -98,13 +100,48 @@ def reflection(w_o, normal):
     return w_k, NdotV
 
 
+def depth_to_pointcloud(depth, intrinsic, c2w, stride=4, depth_threshold=50.0):
+    """针对 Blender/NeRF 的固定反投影：
+    - 深度是 z-buffer（camera-space Z 沿视线）
+    - 相机前向为 -Z（forward_sign = -1）
+    - 图像 v 向下，需要翻转为 camera Y 向上（flip_y = -1）
+    """
+    depth = np.squeeze(depth)
+    h, w = depth.shape
+    u, v = np.meshgrid(np.arange(0, w, stride), np.arange(0, h, stride))
+    z = depth[::stride, ::stride]
+
+    mask = (z > 1e-6) & (z < depth_threshold)
+    u = u[mask].astype(np.float32)
+    v = v[mask].astype(np.float32)
+    z = z[mask]
+
+    fx, fy, cx, cy = intrinsic
+    # 固定常量
+    forward_sign = 1.0
+    flip_y = 1.0
+
+    # z-buffer -> camera space
+    x = (u - cx) * z / fx
+    y = flip_y * (v - cy) * z / fy
+    pts_cam = np.stack([x, y, forward_sign * z, np.ones_like(z)], axis=0)
+    points_w = (c2w @ pts_cam).T[:, :3]
+    return points_w
 
 
-
-def get_specular_color_surfel(envmap: torch.Tensor, albedo, HWK, R, T, normal_map, render_alpha, scaling_modifier = 1.0, refl_strength = None, roughness = None, pc=None, surf_depth=None, indirect_light=None): #RT W2C
+def get_specular_color_surfel(envmap: torch.Tensor, albedo, HWK, R, T, c2w, normal_map, render_alpha, scaling_modifier = 1.0, refl_strength = None, roughness = None, pc=None, surf_depth=None, indirect_light=None): #RT W2C
     global FG_LUT
     H,W,K = HWK
     rays_cam, rays_o = sample_camera_rays(HWK, R, T)
+    w2c = np.linalg.inv(c2w)
+    # print(f'w2c: {w2c}')
+    # print(R.T)
+    # print(T)
+    # input()
+    # print(f'c2w: {c2w}')
+    # print(R.T)
+    # print(-R @ T.unsqueeze(-1))
+    # input('c2w')
     w_o = -rays_cam
     rays_refl, NdotV = reflection(w_o, normal_map)
     rays_refl = safe_normalize(rays_refl)
@@ -114,8 +151,11 @@ def get_specular_color_surfel(envmap: torch.Tensor, albedo, HWK, R, T, normal_ma
     fg = dr.texture(FG_LUT, fg_uv.reshape(1, -1, 1, 2).contiguous(), filter_mode="linear", boundary_mode="clamp").reshape(1, H, W, 2) 
     # Compute direct light
     direct_light = envmap(rays_refl, roughness=roughness)
-    specular_weight = ((0.04 * (1 - refl_strength) + albedo * refl_strength) * fg[0][..., 0:1] + fg[0][..., 1:2]) 
-    
+    # specular_weight = ((0.04 * (1 - refl_strength) + albedo * refl_strength) * fg[0][..., 0:1] + fg[0][..., 1:2]) 
+    specular_weight = 0.04 * fg[0][..., 0:1] + fg[0][..., 1:2]
+    # comment: M_specular = ((1 −m) * 0.04 +m * a) * F1 + F2
+    # ((0.04 * (1 - refl_strength) + albedo * refl_strength) 
+
     # visibility
     visibility = torch.ones_like(render_alpha)
     if pc.ray_tracer is not None and indirect_light is not None:
@@ -125,10 +165,56 @@ def get_specular_color_surfel(envmap: torch.Tensor, albedo, HWK, R, T, normal_ma
         # import pdb;pdb.set_trace() 
         rays_refl, _ = reflection(w_o, normal_map)
         rays_refl = safe_normalize(rays_refl)
+        # print(f'surf_depth.permute(1, 2, 0).shape: {surf_depth.permute(1, 2, 0).shape}')
+        # print(f'rays_cam.shape: {rays_cam.shape}')
+        print(f'rays_o: {rays_o}')
+        print(f'c2w: {c2w}')
+        input()
         intersections = rays_o + surf_depth.permute(1, 2, 0) * rays_cam
         # import pdb;pdb.set_trace()
         _, _, depth = pc.ray_tracer.trace(intersections[mask], rays_refl[mask])
-        visibility[mask] = (depth >= 10).float().unsqueeze(-1)
+        # visibility[mask] = (depth >= 10).float().unsqueeze(-1)
+        visibility[mask] = (depth >= 0.3).float().unsqueeze(-1)
+
+        #####
+        # "fl_x": 640.0,
+        # "fl_y": 640.0,
+        # "cx": 640.0,
+        # "cy": 360.0,
+        # "w": 1280.0,
+        # "h": 720.0,
+        # print(R)
+        # print(T)
+        # print(c2w)
+        # w2c = np.linalg.inv(c2w)
+        # print(w2c)
+        # input()
+        # points_np = depth_to_pointcloud(surf_depth.permute(1, 2, 0).detach().cpu().numpy(), [640.0 / 2.0, 640.0 / 2.0, 640.0 / 2.0, 360.0 / 2.0], c2w, stride=4, depth_threshold=50.0)
+
+        # # 假设 intersections 是一个包含点云数据的 tensor，形状为 (N, 3)
+        points = intersections[mask]  # 通过 mask 筛选点云
+        # print(f'points.shape: {points.shape}')
+        # print(f'points.dtype: {points.dtype}')
+        # print(f'K: {K}')
+        # print(f'W: {W}')
+        # print(f'H: {H}')
+        # input()
+
+        # # 将 tensor 转换为 numpy 数组，Open3D 需要 numpy 格式的点云数据
+        points_np = points.cpu().detach().numpy()  # 转换为 numpy 数组 (确保在 CPU 上)
+
+        # 创建 Open3D 点云对象
+        point_cloud = o3d.geometry.PointCloud()
+        point_cloud.points = o3d.utility.Vector3dVector(points_np)
+
+        # 如果是保存点云，可以用以下方法:
+        ply_pointcloud_path = "/home/disk1/xjm/Workspace/ref-gaussian/debug_pc.ply"
+        o3d.io.write_point_cloud(ply_pointcloud_path, point_cloud)
+        input("finish")
+        input("finish")
+        input("finish")
+        exit()
+        # #####
     
         # indirect light
         specular_light = direct_light * visibility + (1 - visibility) * indirect_light

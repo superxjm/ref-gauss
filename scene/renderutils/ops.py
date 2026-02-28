@@ -12,6 +12,8 @@ import os
 import sys
 import torch
 import torch.utils.cpp_extension
+import sys
+sys.path.append('/home/xjm/.cache/torch_extensions/py310_cu128/renderutils_plugin')
 
 from .bsdf import *
 from .loss import *

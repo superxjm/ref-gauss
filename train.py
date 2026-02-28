@@ -140,9 +140,106 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
 
         gt_image = viewpoint_cam.original_image.cuda()
+        # print(f"gt image shape: {gt_image.shape}")
+        # input()
+        
+        #######################
+        # # 尝试从相机获取 normal
+        # gt_normal = getattr(viewpoint_cam, "normal", None)
+
+        # # 如果相机里没有 normal，且这是第一次遇到这个相机，我们尝试去硬盘加载
+        # if gt_normal is None:
+        #     # 拼凑 normal 文件路径
+        #     # dataset.source_path 是数据根目录
+        #     # viewpoint_cam.image_name 是文件名 (如 r_0)
+        #     normal_path = os.path.join(dataset.source_path, "normal", f"{viewpoint_cam.image_name}.png")
+            
+        #     # 检查文件是否存在
+        #     if os.path.exists(normal_path):
+        #         try:
+        #             from PIL import Image
+        #             import torchvision.transforms.functional as tf   
+        #             # 加载图片
+        #             with Image.open(normal_path) as pil_img:
+        #                 # 确保和 GT Image 尺寸一致
+        #                 if pil_img.size != (viewpoint_cam.image_width, viewpoint_cam.image_height):
+        #                     pil_img = pil_img.resize((viewpoint_cam.image_width, viewpoint_cam.image_height), Image.NEAREST)
+                        
+        #                 # 转为 Tensor 并移到 CUDA
+        #                 # 此时范围是 [0, 1]
+        #                 gt_normal = tf.to_tensor(pil_img).cuda()
+                        
+        #                 # 只取前3个通道 (以防是 RGBA)
+        #                 if gt_normal.shape[0] > 3:
+        #                     gt_normal = gt_normal[:3, ...]
+                    
+        #             # 缓存到相机对象中
+        #             # 这样下次训练到这个视角时，就不用再读硬盘了，速度不会变慢
+        #             setattr(viewpoint_cam, "normal", gt_normal)
+                    
+        #             # 打印一次成功信息 (仅限前几次)
+        #             if iteration < first_iter + 50: 
+        #                 print(f"[LOADER] Loaded normal for {viewpoint_cam.image_name}")
+
+        #         except Exception as e:
+        #             print(f"[ERROR] Failed to load normal {normal_path}: {e}")
+        #     else:
+        #         setattr(viewpoint_cam, "normal", False) 
+        #######################
 
         total_loss, tb_dict = calculate_loss(viewpoint_cam, gaussians, render_pkg, opt, iteration)
         dist_loss, normal_loss, loss, Ll1, normal_smooth_loss, depth_smooth_loss = tb_dict["loss_dist"], tb_dict["loss_normal_render_depth"], tb_dict["loss0"], tb_dict["loss_l1"], tb_dict["loss_normal_smooth"], tb_dict["loss_depth_smooth"] 
+
+        #######################
+        # if gt_normal is not None:
+        #     gt_normal = gt_normal.cuda()
+        #     render_normal = render_pkg['rend_normal'] 
+        #     rend_alpha = render_pkg['rend_alpha'] 
+
+        #     gt_normal = gt_normal * 2.0 - 1.0 
+        #     gt_normal = torch.nn.functional.normalize(gt_normal, dim=0) 
+    
+        #     # 求 Normal World GT 的 loss
+        #     normal_gt_error = 1 - (render_normal * gt_normal).sum(dim=0)[None]
+        #     lambda_gt_normal = getattr(opt, "lambda_gt_normal", 0.5)
+        #     normal_gt_loss = lambda_gt_normal * (normal_gt_error).mean()
+        #     total_loss += normal_gt_loss
+
+        #     alpha_error = torch.abs(1 - rend_alpha)
+        #     lambda_alpha = getattr(opt, "lambda_alpha", 0.5)
+        #     alpha_loss = lambda_alpha * (alpha_error).mean()
+        #     total_loss += alpha_loss
+
+        #     if iteration % 1000 == 0:
+        #         # 定义保存路径
+        #         debug_dir = os.path.join(args.model_path, "debug_normal_vis")
+        #         os.makedirs(debug_dir, exist_ok=True)
+                
+        #         # 准备可视化数据: [-1, 1] -> [0, 1]
+        #         # gt_normal_vis: Ground Truth Normal
+        #         gt_vis = (gt_normal.detach() + 1.0) * 0.5
+        #         gt_vis = gt_vis.clamp(0.0, 1.0)
+                
+        #         # render_normal_vis: Rendered Normal
+        #         rend_vis = (render_normal.detach() + 1.0) * 0.5
+        #         rend_vis = rend_vis.clamp(0.0, 1.0)
+                
+        #         # error_vis: Error Map (越亮误差越大)
+        #         # normal_gt_error 是 [1, H, W]，为了可视化方便可以不用 repeat，save_image 会处理
+        #         err_vis = normal_gt_error.detach().clamp(0.0, 1.0)
+                
+        #         # 拼接图片方便对比 (GT | Render | Error)
+        #         # cat 在宽度方向拼接 (dim=2)
+        #         combined_vis = torch.cat([gt_vis, rend_vis, err_vis.repeat(3, 1, 1)], dim=2)
+                
+        #         # 文件名: iter_camName.png
+        #         fname = f"iter{iteration:05d}_{viewpoint_cam.image_name}.png"
+        #         save_path = os.path.join(debug_dir, fname)
+                
+        #         import torchvision
+        #         torchvision.utils.save_image(combined_vis, save_path)
+        #         print(f"[DEBUG] Saved normal visualization to {save_path}")
+        #######################
 
         def get_outside_msk():
             return None if not USE_ENV_SCOPE else torch.sum((gaussians.get_xyz - ENV_CENTER[None])**2, dim=-1) > ENV_RADIUS**2
@@ -356,6 +453,12 @@ def save_training_vis(viewpoint_cam, gaussians, background, render_fn, pipe, opt
                 render_pkg["surf_normal"] * 0.5 + 0.5,  
                 error_map, 
             ]
+            if opt.indirect:
+                visualization_list += [
+                    render_pkg["visibility"].repeat(3, 1, 1),
+                    render_pkg["direct_light"],
+                    render_pkg["indirect_light"],
+                ]
   
 
         grid = torch.stack(visualization_list, dim=0)
@@ -370,9 +473,12 @@ def save_training_vis(viewpoint_cam, gaussians, background, render_fn, pipe, opt
             else:
                 env_dict = gaussians.render_env_map()
 
+            print(torch.max(env_dict["env1"]))
+            print(torch.max(env_dict["env2"]))
+            # input()
             grid = [
-                env_dict["env1"].permute(2, 0, 1),
-                env_dict["env2"].permute(2, 0, 1),
+                env_dict["env1"].permute(2, 0, 1) / 10.0,
+                env_dict["env2"].permute(2, 0, 1) / 10.0,
             ]
             grid = make_grid(grid, nrow=1, padding=10)
             save_image(grid, os.path.join(args.visualize_path, f"{iteration:06d}_env.png"))
