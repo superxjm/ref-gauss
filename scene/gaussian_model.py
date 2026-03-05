@@ -236,6 +236,12 @@ class GaussianModel:
     def get_features(self):
         features_dc = self._features_dc
         features_rest = self._features_rest
+        return torch.cat((features_dc, features_rest), dim=1)
+    
+    @property
+    def get_features_and_set_rest_to_zero(self):
+        features_dc = self._features_dc
+        features_rest = self._features_rest
         features_rest = torch.zeros_like(features_rest)
         return torch.cat((features_dc, features_rest), dim=1)
     

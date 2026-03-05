@@ -225,14 +225,14 @@ def readCamerasFromTransforms(path, transformsfile, white_background, extension=
 
             # NeRF 'transform_matrix' is a camera-to-world transform
             c2w = np.array(frame["transform_matrix"])
-            c2w_R = c2w[:3,:3]
-            U, Sigma, Vt = np.linalg.svd(c2w_R)
-            Sigma_matrix = np.diag(Sigma)
+            # c2w_R = c2w[:3,:3]
+            # U, Sigma, Vt = np.linalg.svd(c2w_R)
+            # Sigma_matrix = np.diag(Sigma)
             # print(Sigma_matrix)
             # c2w[:3,:3] = U @ Vt
             # print(c2w_R)
             # print(c2w_R @ c2w_R.T)
-            input()
+            # input()
 
             # change from OpenGL/Blender camera axes (Y up, Z back) to COLMAP (Y down, Z forward)
             c2w[:3, 1:3] *= -1

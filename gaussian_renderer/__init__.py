@@ -29,8 +29,8 @@ def compute_2dgs_normal_and_regularizations(allmap, viewpoint_camera, pipe):
     render_alpha = allmap[1:2]
     
     # get normal map
-    render_normal = allmap[2:5]
-    render_normal = (render_normal.permute(1,2,0) @ (viewpoint_camera.world_view_transform[:3,:3].T)).permute(2,0,1)
+    render_normal_cam = allmap[2:5]
+    render_normal = (render_normal_cam.permute(1,2,0) @ (viewpoint_camera.world_view_transform[:3,:3].T)).permute(2,0,1)
     
     # get median depth map
     render_depth_median = allmap[5:6]
@@ -57,6 +57,7 @@ def compute_2dgs_normal_and_regularizations(allmap, viewpoint_camera, pipe):
     return {
         'render_alpha': render_alpha,
         'render_normal': render_normal,
+        'render_normal_cam': render_normal_cam,
         'render_depth_median': render_depth_median,
         'render_depth_expected': render_depth_expected,
         'render_dist': render_dist,
@@ -157,6 +158,7 @@ def render_initial(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.
     regularizations = compute_2dgs_normal_and_regularizations(allmap, viewpoint_camera, pipe)
     render_alpha = regularizations['render_alpha']
     render_normal = regularizations['render_normal']
+    render_normal_cam = regularizations['render_normal_cam']
     render_depth_median = regularizations['render_depth_median']
     render_depth_expected = regularizations['render_depth_expected']
     render_dist = regularizations['render_dist']
@@ -169,6 +171,8 @@ def render_initial(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.
     final_image = rendered_image + bg_color[:, None, None] * (1 - render_alpha)
 
     render_normal  = torch.nn.functional.normalize(render_normal , dim=0) 
+    render_normal_cam  = torch.nn.functional.normalize(render_normal_cam , dim=0) 
+    
     final_image = torch.clamp_max(final_image, 1.0)
 
     rets =  {"render": final_image,
@@ -177,9 +181,10 @@ def render_initial(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.
         "radii": radii,
         'rend_alpha': render_alpha,
         'rend_normal': render_normal,
+        'rend_normal_cam': render_normal_cam,
         'rend_dist': render_dist,
         'surf_depth': surf_depth,
-        'surf_normal': surf_normal,
+        'surf_normal': surf_normal
     }
 
     return rets
@@ -266,7 +271,8 @@ def render_surfel(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.T
             sh2rgb = eval_sh(pc.active_sh_degree, shs_view, dir_pp_normalized)
             colors_precomp = torch.clamp_min(sh2rgb + 0.5, 0.0)
         else:
-            shs = pc.get_features
+            # shs = pc.get_features
+            shs = pc.get_features_and_set_rest_to_zero
     else:
         colors_precomp = override_color
 
@@ -330,6 +336,7 @@ def render_surfel(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.T
     regularizations = compute_2dgs_normal_and_regularizations(allmap, viewpoint_camera, pipe)
     render_alpha = regularizations['render_alpha']
     render_normal = regularizations['render_normal']
+    render_normal_cam = regularizations['render_normal_cam']
     render_dist = regularizations['render_dist']
     surf_depth = regularizations['surf_depth']
     surf_normal = regularizations['surf_normal']
@@ -364,6 +371,7 @@ def render_surfel(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.T
     final_image = final_image + bg_color[:, None, None] * (1 - render_alpha)
   
     render_normal  = torch.nn.functional.normalize(render_normal , dim=0) 
+    render_normal_cam  = torch.nn.functional.normalize(render_normal_cam , dim=0) 
     final_image = torch.clamp_max(final_image, 1.0)
 
     if opt.indirect:
@@ -385,6 +393,7 @@ def render_surfel(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.T
             ## normal, accum alpha, dist, depth map
             'rend_alpha': render_alpha,
             'rend_normal': render_normal,
+            'rend_normal_cam': render_normal_cam,
             'rend_dist': render_dist,
             'surf_depth': surf_depth,
             'surf_normal': surf_normal
