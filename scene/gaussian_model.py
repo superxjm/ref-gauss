@@ -239,6 +239,18 @@ class GaussianModel:
         return torch.cat((features_dc, features_rest), dim=1)
     
     @property
+    def get_features_rest(self):
+        features_dc = self._features_dc
+        features_rest = self._features_rest
+        return features_rest
+    
+    @property
+    def get_features_dc(self):
+        features_dc = self._features_dc
+        features_rest = self._features_rest
+        return features_dc
+
+    @property
     def get_features_and_set_rest_to_zero(self):
         features_dc = self._features_dc
         features_rest = self._features_rest
@@ -409,7 +421,7 @@ class GaussianModel:
         # 初始化 MultiEnvLight
         self.env_map = MultiEnvLight(
             centers = probe_centers,
-            k = 1,
+            k = 4,
             path=None,
             device='cuda',
             max_res=args.envmap_max_res,
@@ -417,7 +429,7 @@ class GaussianModel:
             max_roughness=args.envmap_max_roughness,
             trainable=True
         ).cuda()
-        input('finish init env_map')
+        # input('finish init env_map')
         #########################################
 
         self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda")

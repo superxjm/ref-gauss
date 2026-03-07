@@ -141,6 +141,9 @@ def render_initial(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.
             colors_precomp = torch.clamp_min(sh2rgb + 0.5, 0.0)
         else:
             shs = pc.get_features
+            # shs_rest = pc.get_features_rest
+            # print(shs_rest.shape)
+            # print(shs_rest.sum())
     else:
         colors_precomp = override_color
         

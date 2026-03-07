@@ -267,7 +267,7 @@ class EnvLight(torch.nn.Module):
         # light = light.view(*prefix, -1)
         light = light.view(self.n_probes, *original_shape, -1)
 
-        return torch.sigmoid(light)
+        return torch.sigmoid(light) * 10.0
 
 class MultiEnvLight(torch.nn.Module):
     def __init__(self, centers, k=4, path=None, device=None, scale=1.0, min_res=16, max_res=128, min_roughness=0.08, max_roughness=0.5, trainable=False):

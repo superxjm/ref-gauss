@@ -101,11 +101,10 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
         gaussians.update_learning_rate(iteration)
 
-
         # Increase SH levels every 1000 iterations
-        if iteration > opt.feature_rest_from_iter and iteration % 1000 == 0:
+        if iteration > opt.feature_rest_from_iter and iteration % 2000 == 0:
             gaussians.oneupSHdegree()
-
+        
         # Control the init stage
         if iteration > opt.init_until_iter:
             initial_stage = False
@@ -500,17 +499,27 @@ def save_training_vis(viewpoint_cam, gaussians, background, render_fn, pipe, opt
             else:
                 env_dict = gaussians.render_env_map()
 
-            print(torch.max(env_dict["env1"]))
-            print(torch.max(env_dict["env2"]))
+            # print(torch.max(env_dict["env1"]))
+            # print(torch.max(env_dict["env2"]))
             # input()
-            for env1, env2 in zip(env_dict["env1"], env_dict["env2"]):
-                grid = [
-                    env1.permute(2, 0, 1) / 10.0,
-                    env2.permute(2, 0, 1) / 10.0,
-                ]
+            grid = []
+            for idx, env2 in enumerate(env_dict["env2"]):
+                grid.append(env2.permute(2, 0, 1) / 10.0)
+            if len(grid) >= 3:
+                grid = make_grid(grid, nrow=3, padding=10)
+            else:
                 grid = make_grid(grid, nrow=1, padding=10)
-                save_image(grid, os.path.join(args.visualize_path, f"{iteration:06d}_env.png"))
-
+            save_image(grid, os.path.join(args.visualize_path, f"{iteration:06d}_env.png"))
+            # for idx, (env1, env2) in enumerate(zip(env_dict["env1"], env_dict["env2"])):
+            #     # print(torch.max(env1))
+            #     # print(torch.max(env2))
+            #     grid = [
+            #         env1.permute(2, 0, 1) / 10.0,
+            #         env2.permute(2, 0, 1) / 10.0,
+            #     ]
+            #     grid = make_grid(grid, nrow=1, padding=10)
+            #     # Add the index (idx) to the filename
+            #     save_image(grid, os.path.join(args.visualize_path, f"{iteration:06d}_env_{idx:03d}.png"))
       
 NORM_CONDITION_OUTSIDE = False
 def prepare_output_and_logger():    

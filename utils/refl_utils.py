@@ -159,6 +159,34 @@ def get_specular_color_surfel(envmap: torch.Tensor, albedo, HWK, R, T, c2w, norm
     rays_refl = safe_normalize(rays_refl)
     intersections = rays_o + surf_depth.permute(1, 2, 0) * rays_cam
     direct_light = envmap(rays_refl, roughness=roughness, xyz=intersections)
+    # direct_light = envmap(rays_refl, roughness=roughness, xyz=None)
+
+    # import open3d as o3d
+    # points = intersections[mask]  # 通过 mask 筛选点云
+    # points_np = points.cpu().detach().numpy()
+    # point_cloud = o3d.geometry.PointCloud()
+    # point_cloud.points = o3d.utility.Vector3dVector(points_np)
+    # # 合并球体网格的点云和原始点云
+    # combined_point_cloud = point_cloud
+
+    # envmap_centers = envmap.centers.cpu().numpy()#np.array([2.0, 3.0, 1.0])
+    # for i in range(envmap_centers.shape[0]):
+    #     # 创建一个半径为1的球体网格
+    #     sphere = o3d.geometry.TriangleMesh.create_sphere(radius=0.05)
+    #     # 计算并添加法线，以便渲染时显示光照效果
+    #     sphere.compute_vertex_normals()
+    #     # 获取目标位置 (x, y) 坐标，z 坐标可以设定为固定值
+    #     target_position = np.array([envmap_centers[i][0], envmap_centers[i][1], envmap_centers[i][2]])
+    #     # 将球体平移到目标位置
+    #     sphere.translate(target_position)
+    #     # 将球体的点云数据转换并添加到列表中
+    #     sphere_points = sphere.sample_points_uniformly(number_of_points=1000)
+    #     combined_point_cloud += sphere_points
+    
+    # # 保存为一个包含点云和网格的 .ply 文件
+    # o3d.io.write_point_cloud("/home/disk1/xjm/Workspace/ref-gaussian/combined.ply", combined_point_cloud)
+
+    # exit()
     #################
     # specular_weight = ((0.04 * (1 - refl_strength) + albedo * refl_strength) * fg[0][..., 0:1] + fg[0][..., 1:2]) 
     specular_weight = 0.04 * fg[0][..., 0:1] + fg[0][..., 1:2]
@@ -181,8 +209,8 @@ def get_specular_color_surfel(envmap: torch.Tensor, albedo, HWK, R, T, c2w, norm
         # # input()
         # intersections = rays_o + surf_depth.permute(1, 2, 0) * rays_cam
         # import pdb;pdb.set_trace()
-        _, _, depth = pc.ray_tracer.trace(intersections[mask] + 0.0001 * rays_refl[mask], rays_refl[mask])
-        visibility_threshold = 1.0
+        visibility_threshold = 0.3#1.0
+        _, _, depth = pc.ray_tracer.trace(intersections[mask] + visibility_threshold / 40.0 * rays_refl[mask], rays_refl[mask])
         visibility[mask] = (depth >= visibility_threshold).float().unsqueeze(-1)
         # visibility[mask] = (depth >= 0.3).float().unsqueeze(-1)
 
