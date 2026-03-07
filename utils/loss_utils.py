@@ -109,7 +109,11 @@ def calculate_loss(viewpoint_camera, pc, render_pkg, opt, iteration):
         loss_normal_render_depth = (1 - (rendered_normal * surf_normal).sum(dim=0))[None]
         loss_normal_render_depth = loss_normal_render_depth.mean()
         tb_dict["loss_normal_render_depth"] = loss_normal_render_depth
-        loss = loss + opt.lambda_normal_render_depth * loss_normal_render_depth
+
+        if iteration > 12000:
+            loss = loss + 10.0 * opt.lambda_normal_render_depth * loss_normal_render_depth
+        else:
+            loss = loss + opt.lambda_normal_render_depth * loss_normal_render_depth
     else:
         tb_dict["loss_normal_render_depth"] = torch.zeros_like(loss)
 

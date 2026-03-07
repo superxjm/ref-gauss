@@ -150,7 +150,16 @@ def get_specular_color_surfel(envmap: torch.Tensor, albedo, HWK, R, T, c2w, norm
     fg_uv = torch.cat([NdotV, roughness], -1).clamp(0, 1) 
     fg = dr.texture(FG_LUT, fg_uv.reshape(1, -1, 1, 2).contiguous(), filter_mode="linear", boundary_mode="clamp").reshape(1, H, W, 2) 
     # Compute direct light
-    direct_light = envmap(rays_refl, roughness=roughness)
+
+    #################
+    mask = (render_alpha>0)[..., 0]
+    rays_cam, rays_o = sample_camera_rays_unnormalize(HWK, R, T)
+    w_o = safe_normalize(-rays_cam)
+    rays_refl, _ = reflection(w_o, normal_map)
+    rays_refl = safe_normalize(rays_refl)
+    intersections = rays_o + surf_depth.permute(1, 2, 0) * rays_cam
+    direct_light = envmap(rays_refl, roughness=roughness, xyz=intersections)
+    #################
     # specular_weight = ((0.04 * (1 - refl_strength) + albedo * refl_strength) * fg[0][..., 0:1] + fg[0][..., 1:2]) 
     specular_weight = 0.04 * fg[0][..., 0:1] + fg[0][..., 1:2]
     # comment: M_specular = ((1 −m) * 0.04 +m * a) * F1 + F2
@@ -159,62 +168,58 @@ def get_specular_color_surfel(envmap: torch.Tensor, albedo, HWK, R, T, c2w, norm
     # visibility
     visibility = torch.ones_like(render_alpha)
     if pc.ray_tracer is not None and indirect_light is not None:
-        mask = (render_alpha>0)[..., 0]
-        rays_cam, rays_o = sample_camera_rays_unnormalize(HWK, R, T)
-        w_o = safe_normalize(-rays_cam)
-        # import pdb;pdb.set_trace() 
-        rays_refl, _ = reflection(w_o, normal_map)
-        rays_refl = safe_normalize(rays_refl)
-        # print(f'surf_depth.permute(1, 2, 0).shape: {surf_depth.permute(1, 2, 0).shape}')
-        # print(f'rays_cam.shape: {rays_cam.shape}')
-        # print(f'rays_o: {rays_o}')
-        # print(f'c2w: {c2w}')
-        # input()
-        intersections = rays_o + surf_depth.permute(1, 2, 0) * rays_cam
+        # mask = (render_alpha>0)[..., 0]
+        # rays_cam, rays_o = sample_camera_rays_unnormalize(HWK, R, T)
+        # w_o = safe_normalize(-rays_cam)
+        # # import pdb;pdb.set_trace() 
+        # rays_refl, _ = reflection(w_o, normal_map)
+        # rays_refl = safe_normalize(rays_refl)
+        # # print(f'surf_depth.permute(1, 2, 0).shape: {surf_depth.permute(1, 2, 0).shape}')
+        # # print(f'rays_cam.shape: {rays_cam.shape}')
+        # # print(f'rays_o: {rays_o}')
+        # # print(f'c2w: {c2w}')
+        # # input()
+        # intersections = rays_o + surf_depth.permute(1, 2, 0) * rays_cam
         # import pdb;pdb.set_trace()
-        _, _, depth = pc.ray_tracer.trace(intersections[mask], rays_refl[mask])
-        # visibility[mask] = (depth >= 5).float().unsqueeze(-1)
-        visibility[mask] = (depth >= 0.3).float().unsqueeze(-1)
+        _, _, depth = pc.ray_tracer.trace(intersections[mask] + 0.0001 * rays_refl[mask], rays_refl[mask])
+        visibility_threshold = 1.0
+        visibility[mask] = (depth >= visibility_threshold).float().unsqueeze(-1)
+        # visibility[mask] = (depth >= 0.3).float().unsqueeze(-1)
 
-        # #####
-        # # "fl_x": 640.0,
-        # # "fl_y": 640.0,
-        # # "cx": 640.0,
-        # # "cy": 360.0,
-        # # "w": 1280.0,
-        # # "h": 720.0,
-        # # print(R)
-        # # print(T)
-        # # print(c2w)
-        # # w2c = np.linalg.inv(c2w)
-        # # print(w2c)
-        # # input()
-        # # points_np = depth_to_pointcloud(surf_depth.permute(1, 2, 0).detach().cpu().numpy(), [640.0 / 2.0, 640.0 / 2.0, 640.0 / 2.0, 360.0 / 2.0], c2w, stride=4, depth_threshold=50.0)
+        # # #####
+        # # # "fl_x": 640.0,
+        # # # "fl_y": 640.0,
+        # # # "cx": 640.0,
+        # # # "cy": 360.0,
+        # # # "w": 1280.0,
+        # # # "h": 720.0,
+        # # # print(R)
+        # # # print(T)
+        # # # print(c2w)
+        # # # w2c = np.linalg.inv(c2w)
+        # # # print(w2c)
+        # # # input()
+        # # # points_np = depth_to_pointcloud(surf_depth.permute(1, 2, 0).detach().cpu().numpy(), [640.0 / 2.0, 640.0 / 2.0, 640.0 / 2.0, 360.0 / 2.0], c2w, stride=4, depth_threshold=50.0)
 
-        # # # 假设 intersections 是一个包含点云数据的 tensor，形状为 (N, 3)
+        # # # # 假设 intersections 是一个包含点云数据的 tensor，形状为 (N, 3)
         # points = intersections[mask]  # 通过 mask 筛选点云
-        # # print(f'points.shape: {points.shape}')
-        # # print(f'points.dtype: {points.dtype}')
-        # # print(f'K: {K}')
-        # # print(f'W: {W}')
-        # # print(f'H: {H}')
-        # # input()
-
-        # # # 将 tensor 转换为 numpy 数组，Open3D 需要 numpy 格式的点云数据
-        # points_np = points.cpu().detach().numpy()  # 转换为 numpy 数组 (确保在 CPU 上)
-
-        # # 创建 Open3D 点云对象
+        # points_np = points.cpu().detach().numpy()
         # point_cloud = o3d.geometry.PointCloud()
         # point_cloud.points = o3d.utility.Vector3dVector(points_np)
 
-        # # 如果是保存点云，可以用以下方法:
-        # ply_pointcloud_path = "/home/disk1/xjm/Workspace/ref-gaussian/debug_pc.ply"
-        # o3d.io.write_point_cloud(ply_pointcloud_path, point_cloud)
+        # points_refl = intersections[mask] + visibility_threshold / 40.0 * rays_refl[mask]
+        # points_refl_np = points_refl.cpu().detach().numpy()
+        # point_cloud_refl = o3d.geometry.PointCloud()
+        # point_cloud_refl.points = o3d.utility.Vector3dVector(points_refl_np)
+
+        # # # 如果是保存点云，可以用以下方法:
+        # o3d.io.write_point_cloud("/home/disk1/xjm/Workspace/ref-gaussian/debug_pc.ply", point_cloud)
+        # o3d.io.write_point_cloud("/home/disk1/xjm/Workspace/ref-gaussian/debug_pc_refl.ply", point_cloud_refl)
         # input("finish")
         # input("finish")
         # input("finish")
-        # exit()
-        # # #####
+        # # exit()
+        # # # #####
     
         # indirect light
         specular_light = direct_light * visibility + (1 - visibility) * indirect_light

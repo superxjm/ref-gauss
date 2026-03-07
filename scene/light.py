@@ -18,7 +18,7 @@ def linear_to_srgb(linear):
 def inverse_sigmoid(x):
     return torch.log(x/(1-x))
 
-class EnvLight(torch.nn.Module):
+class EnvLightOldVersion(torch.nn.Module):
 
     def __init__(self, path=None, device=None, scale=1.0, min_res=16, max_res=128, min_roughness=0.08, max_roughness=0.5, trainable=False):
         super().__init__()
@@ -127,3 +127,218 @@ class EnvLight(torch.nn.Module):
         light = light.view(*prefix, -1)
         
         return torch.sigmoid(light) * 10.0
+
+class EnvLight(torch.nn.Module):
+
+    def __init__(self, n_probes=1, path=None, device=None, scale=1.0, min_res=16, max_res=128, min_roughness=0.08, max_roughness=0.5, trainable=False):
+        super().__init__()
+        self.n_probes = n_probes
+        self.device = device if device is not None else 'cuda' # only supports cuda
+        self.scale = scale # scale of the hdr values
+        self.min_res = min_res # minimum resolution for mip-map
+        self.max_res = max_res # maximum resolution for mip-map
+        self.min_roughness = min_roughness
+        self.max_roughness = max_roughness
+        self.trainable = trainable
+        """
+        # init an empty cubemap
+        self.base = torch.nn.Parameter(
+            torch.zeros(6, self.max_res, self.max_res, 3, dtype=torch.float32, device=self.device),
+            requires_grad=self.trainable,
+        )
+        """
+        # 增加 n_probes 作为第 0 维度
+        self.base = torch.nn.Parameter(
+            torch.zeros(self.n_probes, 6, self.max_res, self.max_res, 3, dtype=torch.float32, device=self.device),
+            requires_grad=self.trainable,
+        )
+
+        # try to load from file (.hdr or .exr)
+        if path is not None:
+            self.load(path)
+        
+        self.build_mips()
+
+
+    def load(self, path):
+        """
+        Load an .hdr or .exr environment light map file and convert it to cubemap.
+        """
+        # # load latlong env map from file
+        # image = imageio.imread(path)  # Load .hdr file
+        # if image.dtype != np.float32:
+        #     image = image.astype(np.float32) / 255.0  # Scale to [0,1] if not already in float
+        # 从文件中加载图像
+        hdr_image = imageio.imread(path)
+        
+        if hdr_image.dtype != np.float32:
+            raise ValueError("HDR image should be in float32 format.")
+
+        ldr_image = linear_to_srgb(hdr_image)
+        # 确保图像为浮点类型
+        image = torch.from_numpy(ldr_image).to(self.device) *  self.scale
+        image = torch.clamp(image, 0.001 , 1-0.001)
+        image = inverse_sigmoid(image)
+
+        # Convert from latlong to cubemap format
+        cubemap = latlong_to_cubemap(image, [self.max_res, self.max_res], self.device)
+
+        # Assign the cubemap to the base parameter
+        # self.base.data = cubemap 
+        # 增加 batch 维度，并沿第 0 维复制 self.n_probes 次
+        self.base.data = cubemap.unsqueeze(0).repeat(self.n_probes, 1, 1, 1, 1)
+
+    def build_mips(self, cutoff=0.99):
+        """
+        Build mip-maps for specular reflection based on cubemap.
+        """
+        self.specular = [self.base]
+        """
+        while self.specular[-1].shape[1] > self.min_res:
+            self.specular += [cubemap_mip.apply(self.specular[-1])]
+
+        self.diffuse = ru.diffuse_cubemap(self.specular[-1])
+
+        for idx in range(len(self.specular) - 1):
+            roughness = (idx / (len(self.specular) - 2)) * (self.max_roughness - self.min_roughness) + self.min_roughness
+            self.specular[idx] = ru.specular_cubemap(self.specular[idx], roughness, cutoff) 
+
+        self.specular[-1] = ru.specular_cubemap(self.specular[-1], 1.0, cutoff)
+        """
+
+        while self.specular[-1].shape[2] > self.min_res:
+            # 将多探针拆开逐一传递给旧工具函数，再沿着第 0 维 stack 起来
+            next_mip = torch.stack([cubemap_mip.apply(self.specular[-1][i]) for i in range(self.n_probes)], dim=0)
+            self.specular += [next_mip]
+
+        self.diffuse = torch.stack([ru.diffuse_cubemap(self.specular[-1][i]) for i in range(self.n_probes)], dim=0)
+
+        for idx in range(len(self.specular) - 1):
+            roughness = (idx / (len(self.specular) - 2)) * (self.max_roughness - self.min_roughness) + self.min_roughness
+            # 同理处理每层的 specular
+            self.specular[idx] = torch.stack([ru.specular_cubemap(self.specular[idx][i], roughness, cutoff) for i in range(self.n_probes)], dim=0) 
+
+        # 处理最后一层的 specular
+        self.specular[-1] = torch.stack([ru.specular_cubemap(self.specular[-1][i], 1.0, cutoff) for i in range(self.n_probes)], dim=0)
+
+    def get_mip(self, roughness):
+        """
+        Map roughness to mip level.
+        """
+        return torch.where(
+            roughness < self.max_roughness, 
+            (torch.clamp(roughness, self.min_roughness, self.max_roughness) - self.min_roughness) / (self.max_roughness - self.min_roughness) * (len(self.specular) - 2), 
+            (torch.clamp(roughness, self.max_roughness, 1.0) - self.max_roughness) / (1.0 - self.max_roughness) + len(self.specular) - 2
+        )
+        
+
+    def __call__(self, l, mode=None, roughness=None):
+        """
+        Query the environment light based on direction and roughness.
+        """
+        
+        original_shape = l.shape[:-1]
+        
+        # 将 l 展平并扩展为 [n_probes, 1, 像素数量, 3] 
+        # 这样 nvdiffrast 就会一次性计算所有探针在这些射线上的光照
+        l_input = l.reshape(-1, l.shape[-1]).view(1, 1, -1, l.shape[-1]).expand(self.n_probes, -1, -1, -1).contiguous()
+        r_input = None
+        if roughness is not None:
+            r_input = roughness.reshape(-1, 1).view(1, 1, -1, 1).expand(self.n_probes, -1, -1, -1).contiguous()
+
+        if mode == "diffuse":
+            # Diffuse lighting
+            light = dr.texture(self.diffuse, l_input, filter_mode='linear', boundary_mode='cube')
+        elif mode == "pure_env":
+            # Pure environment light (no mip-map)
+            light = dr.texture(self.base, l_input, filter_mode='linear', boundary_mode='cube')
+        else:
+            # Specular lighting with mip-mapping
+            miplevel = self.get_mip(r_input)
+            light = dr.texture(
+                self.specular[0], 
+                l_input,
+                mip=list(m for m in self.specular[1:]),
+                mip_level_bias=miplevel[..., 0], 
+                filter_mode='linear-mipmap-linear', 
+                boundary_mode='cube'
+            )
+
+        # light = light.view(*prefix, -1)
+        light = light.view(self.n_probes, *original_shape, -1)
+
+        return torch.sigmoid(light)
+
+class MultiEnvLight(torch.nn.Module):
+    def __init__(self, centers, k=4, path=None, device=None, scale=1.0, min_res=16, max_res=128, min_roughness=0.08, max_roughness=0.5, trainable=False):
+        super().__init__()
+        self.k = k
+        # 中心为 buffer
+        self.register_buffer("centers", centers)
+        # 创建 N 个EnvLight 实例 
+        """
+        self.lights = torch.nn.ModuleList([
+            EnvLight(path, device, scale, min_res, max_res, min_roughness, max_roughness, trainable)
+            for _ in range(len(centers))
+        ])
+        """
+        self.light = EnvLight(n_probes=len(centers), path=path, device=device, scale=scale, min_res=min_res, max_res=max_res, min_roughness=min_roughness, max_roughness=max_roughness, trainable=trainable)
+
+    def training_setup(self, training_args):
+        # 直接调用底层的 light 
+        if hasattr(self.light, 'training_setup'):
+            self.light.training_setup(training_args)
+    
+    def loss(self):
+        # 直接调用底层的 light
+        if hasattr(self.light, 'loss'):
+            return self.light.loss()
+        return 0.0
+
+    def build_mips(self):
+        # 直接调用，不再需要循环
+        self.light.build_mips()
+    
+    def __call__(self, l, mode=None, roughness=None, xyz=None):
+        # 增加 xyz 计算距离权重
+        if xyz is None:
+            # self.light 会返回所有探针的光照 [n_probes, ...], 我们取第 0 个即可
+            return self.light(l, mode, roughness)[0]
+        
+        # 否则基于距离的加权插值
+        input_shape = l.shape
+        l_flat = l.view(-1, 3)
+        xyz_flat = xyz.view(-1, 3)
+        r_flat = None
+        if roughness is not None:
+            r_flat = roughness.view(-1, 1)
+            
+        n_probes = self.centers.shape[0]
+
+        # 计算像素到每个中心的距离
+        dists = torch.cdist(xyz_flat, self.centers)  # [n_pixels, n_probes]
+
+        # 找到最近的 K 个探针
+        actual_k = min(self.k, n_probes)
+        topk_dists, topk_indices = torch.topk(dists, k=actual_k, dim=1, largest=False)
+
+        # 计算权重（距离的倒数的平方）
+        weights = 1.0 / (topk_dists.pow(2) + 1e-6)  # 防止除零 
+        weights = weights / weights.sum(dim=1, keepdim=True)  # [n_pixels, K]
+
+        # 一次性调用 EnvLight 算出所有探针的结果
+        all_colors = self.light(l_flat, mode, r_flat) 
+        
+        # 把形状变换为 [n_pixels, n_probes, 3]，方便针对每个像素按探针 index 提取
+        all_colors = all_colors.permute(1, 0, 2)
+        
+        # 使用 torch.gather 提取 Top-K 个探针对应的颜色
+        # gather_indices 需要与 all_colors 维度一致: [n_pixels, K, 3]
+        gather_indices = topk_indices.unsqueeze(-1).expand(-1, -1, 3)
+        topk_colors = torch.gather(all_colors, 1, gather_indices) # 得到形状 [n_pixels, K, 3]
+
+        # 乘以权重并对 K 维度求和 (混合)
+        weights = weights.unsqueeze(-1) # [n_pixels, K, 1]
+        output = (topk_colors * weights).sum(dim=1) # 得到形状 [n_pixels, 3]
+
+        return output.reshape(input_shape)  

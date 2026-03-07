@@ -34,8 +34,7 @@ try:
     TENSORBOARD_FOUND = True
 except ImportError:
     TENSORBOARD_FOUND = False
-
-
+import cv2
 
 
 
@@ -146,6 +145,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         ######################
         # 尝试从相机获取 normal
         gt_normal = getattr(viewpoint_cam, "normal", None)
+        dilated_edges = getattr(viewpoint_cam, "dilated_edges", None)
 
         # 如果相机里没有 normal，且这是第一次遇到这个相机，我们尝试去硬盘加载
         if gt_normal is None:
@@ -174,10 +174,29 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                             gt_normal = gt_normal[:3, ...]
                         gt_normal[1] = 1 - gt_normal[1]
                         gt_normal[2] = 1 - gt_normal[2]
+
+                        # 转为 NumPy 数组并转换为灰度图像
+                        normal_np = gt_normal.permute(1, 2, 0).cpu().numpy()  # Convert from CHW to HWC
+                        gray_image = cv2.cvtColor(normal_np, cv2.COLOR_RGB2GRAY)  # 转换为灰度图 
+                        # Canny 边缘检测
+                        edges = cv2.Canny((gray_image * 255).astype(np.uint8), threshold1=100, threshold2=200)
+                        kernel = np.ones((11, 11), np.uint8)  # 使用一个 5x5 的内核
+                        dilated_edges = cv2.dilate(edges, kernel, iterations=1)
+                        dilated_edges = torch.from_numpy(dilated_edges).unsqueeze(0).cuda()
+                        # cv2.imwrite('gray_image.jpg', (gray_image * 255).astype(np.uint8))
+                        # cv2.imwrite('normal_image.jpg', (normal_np * 255).astype(np.uint8))
+                        # cv2.imwrite('dilated_edges.jpg', dilated_edges)
+                        # input()
                     
                     # 缓存到相机对象中
                     # 这样下次训练到这个视角时，就不用再读硬盘了，速度不会变慢
                     setattr(viewpoint_cam, "normal", gt_normal)
+                    setattr(viewpoint_cam, "dilated_edges", dilated_edges)
+                    # print(gt_normal.dtype)
+                    # print(gt_normal.shape)
+                    # print(dilated_edges.dtype)
+                    # print(dilated_edges.shape)
+                    # input()
                     
                     # 打印一次成功信息 (仅限前几次)
                     if iteration < first_iter + 50: 
@@ -195,6 +214,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         ######################
         if gt_normal is not None:
             gt_normal = gt_normal.cuda()
+            dilated_edges = dilated_edges.cuda()
             rend_normal_cam = render_pkg['rend_normal_cam'] 
             rend_alpha = render_pkg['rend_alpha'] 
 
@@ -202,9 +222,13 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             gt_normal = torch.nn.functional.normalize(gt_normal, dim=0) 
     
             # 求 Normal World GT 的 loss
+            # lambda_gt_normal = getattr(opt, "lambda_gt_normal", 0.1)
             normal_gt_error = 1 - (rend_normal_cam * gt_normal).sum(dim=0)[None]
-            lambda_gt_normal = getattr(opt, "lambda_gt_normal", 0.1)
-            normal_gt_loss = lambda_gt_normal * (normal_gt_error).mean()
+            normal_gt_loss = 0.5 * (normal_gt_error[dilated_edges < 255]).mean()
+            normal_gt_loss += 0.1 * (normal_gt_error[dilated_edges == 255]).mean()
+            # print((dilated_edges < 255).sum())
+            # print((dilated_edges == 255).sum())
+            # input('dilated_edges num')
             total_loss += normal_gt_loss
 
             alpha_error = torch.abs(1 - rend_alpha)
@@ -479,12 +503,13 @@ def save_training_vis(viewpoint_cam, gaussians, background, render_fn, pipe, opt
             print(torch.max(env_dict["env1"]))
             print(torch.max(env_dict["env2"]))
             # input()
-            grid = [
-                env_dict["env1"].permute(2, 0, 1) / 10.0,
-                env_dict["env2"].permute(2, 0, 1) / 10.0,
-            ]
-            grid = make_grid(grid, nrow=1, padding=10)
-            save_image(grid, os.path.join(args.visualize_path, f"{iteration:06d}_env.png"))
+            for env1, env2 in zip(env_dict["env1"], env_dict["env2"]):
+                grid = [
+                    env1.permute(2, 0, 1) / 10.0,
+                    env2.permute(2, 0, 1) / 10.0,
+                ]
+                grid = make_grid(grid, nrow=1, padding=10)
+                save_image(grid, os.path.join(args.visualize_path, f"{iteration:06d}_env.png"))
 
       
 NORM_CONDITION_OUTSIDE = False

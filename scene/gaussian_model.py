@@ -6,7 +6,7 @@ import os
 from utils.system_utils import mkdir_p
 from plyfile import PlyData, PlyElement
 from cubemapencoder import CubemapEncoder
-from scene.light import EnvLight
+from scene.light import EnvLight, MultiEnvLight
 from utils.sh_utils import RGB2SH
 from simple_knn._C import distCUDA2
 from utils.graphics_utils import BasicPointCloud, init_predefined_omega
@@ -262,6 +262,14 @@ class GaussianModel:
         return self._indirect_asg
     
     def render_env_map(self, H=512):
+        # if H == self.env_H:
+        #     directions1 = self.env_directions1
+        #     directions2 = self.env_directions2
+        # else:
+        #     W = H * 2
+        #     directions1 = get_env_direction1(H, W)
+        #     directions2 = get_env_direction2(H, W)
+        # return {'env1': self.env_map(directions1, mode="pure_env"), 'env2': self.env_map(directions2, mode="pure_env")}
         if H == self.env_H:
             directions1 = self.env_directions1
             directions2 = self.env_directions2
@@ -269,8 +277,18 @@ class GaussianModel:
             W = H * 2
             directions1 = get_env_direction1(H, W)
             directions2 = get_env_direction2(H, W)
+        if isinstance(self.env_map, MultiEnvLight):
+            env1_all = self.env_map.light(directions1, mode="pure_env")
+            env2_all = self.env_map.light(directions2, mode="pure_env")
+            env1_list = [env1_all[i] for i in range(env1_all.shape[0])]
+            env2_list = [env2_all[i] for i in range(env2_all.shape[0])]
+            
+            return {
+                'env1': env1_list, 
+                'env2': env2_list
+            }
         return {'env1': self.env_map(directions1, mode="pure_env"), 'env2': self.env_map(directions2, mode="pure_env")}
-    
+
     def render_env_map_2(self, H=512):
         if H == self.env_H:
             directions1 = self.env_directions1
@@ -358,8 +376,49 @@ class GaussianModel:
         self._normal1 = nn.Parameter(torch.from_numpy(normals1).to(self._xyz.device).requires_grad_(True))
         self._normal2 = nn.Parameter(torch.from_numpy(normals2).to(self._xyz.device).requires_grad_(True))
 
-        self.env_map = EnvLight(path=None, device='cuda', max_res=args.envmap_max_res, min_roughness=args.envmap_min_roughness, max_roughness=args.envmap_max_roughness, trainable=True).cuda()
-        self.env_map_2 = EnvLight(path=None, device='cuda', max_res=args.envmap_max_res, min_roughness=args.envmap_min_roughness, max_roughness=args.envmap_max_roughness, trainable=True).cuda()
+        # self.env_map = EnvLight(path=None, device='cuda', max_res=args.envmap_max_res, min_roughness=args.envmap_min_roughness, max_roughness=args.envmap_max_roughness, trainable=True).cuda()
+        # self.env_map_2 = EnvLight(path=None, device='cuda', max_res=args.envmap_max_res, min_roughness=args.envmap_min_roughness, max_roughness=args.envmap_max_roughness, trainable=True).cuda()
+
+        #########################################
+        # 计算包围盒并初始化 MultiEnvLight
+        points_np = pcd.points
+        min_xyz = torch.tensor(points_np.min(axis=0)).cuda()
+        max_xyz = torch.tensor(points_np.max(axis=0)).cuda()
+        extent = max_xyz - min_xyz
+
+        grid_res = torch.round(extent / extent.min()).int()
+        print(f"[MultiEnvLight] Grid Split: {grid_res} based on extent {extent.cpu().numpy()}")
+        
+        # 生成网格中心点坐标
+        coords = []
+        for axis in range(3):
+            # 步长
+            step = extent[axis] / grid_res[axis]
+            # 起点偏移半个步长，保证点在格子中心
+            axis_coords = torch.linspace(
+                min_xyz[axis] + step / 2.0, 
+                max_xyz[axis] - step / 2.0, 
+                grid_res[axis], 
+                device='cuda'
+            )
+            coords.append(axis_coords)
+        grid_x, grid_y, grid_z = torch.meshgrid(coords[0], coords[1], coords[2], indexing='ij')
+        probe_centers = torch.stack([grid_x, grid_y, grid_z], dim=-1).reshape(-1, 3)
+        print(f"[MultiEnvLight] Initialized {len(probe_centers)} probes at:\n{probe_centers}")
+
+        # 初始化 MultiEnvLight
+        self.env_map = MultiEnvLight(
+            centers = probe_centers,
+            k = 1,
+            path=None,
+            device='cuda',
+            max_res=args.envmap_max_res,
+            min_roughness=args.envmap_min_roughness,
+            max_roughness=args.envmap_max_roughness,
+            trainable=True
+        ).cuda()
+        input('finish init env_map')
+        #########################################
 
         self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda")
 
@@ -376,8 +435,9 @@ class GaussianModel:
             {'params': [self._opacity], 'lr': training_args.opacity_lr, "name": "opacity"},
             {'params': [self._scaling], 'lr': training_args.scaling_lr, "name": "scaling"},
             {'params': [self._rotation], 'lr': training_args.rotation_lr, "name": "rotation"},
+            # {'params': self.env_map.parameters(), 'lr': training_args.envmap_cubemap_lr, "name": "env"},     
+            # {'params': self.env_map_2.parameters(), 'lr': training_args.envmap_cubemap_lr, "name": "env2"}
             {'params': self.env_map.parameters(), 'lr': training_args.envmap_cubemap_lr, "name": "env"},     
-            {'params': self.env_map_2.parameters(), 'lr': training_args.envmap_cubemap_lr, "name": "env2"}     
         ]
 
         self._normal1.requires_grad_(requires_grad=False)
