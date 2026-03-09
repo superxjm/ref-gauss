@@ -102,7 +102,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         gaussians.update_learning_rate(iteration)
 
         # Increase SH levels every 1000 iterations
-        if iteration > opt.feature_rest_from_iter and iteration % 2000 == 0:
+        if iteration > opt.feature_rest_from_iter and iteration % 1000 == 0:
             gaussians.oneupSHdegree()
         
         # Control the init stage
@@ -234,6 +234,13 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             lambda_alpha = getattr(opt, "lambda_alpha", 0.1)
             alpha_loss = lambda_alpha * (alpha_error).mean()
             total_loss += alpha_loss
+
+            if 'roughness_map' in render_pkg:
+                rend_roughness = render_pkg['roughness_map']
+                roughness_error = torch.abs(1 - rend_roughness)
+                lambda_roughness = getattr(opt, "lambda_roughness", 0.001)
+                roughness_loss = lambda_roughness * (roughness_error).mean()
+                total_loss += roughness_loss
 
             if iteration % 1000 == 0:
                 # 定义保存路径

@@ -162,7 +162,7 @@ class OptimizationParams(ParamGroup):
         self.indirect = 0
         self.indirect_from_iter =  20000 
 
-        self.feature_rest_from_iter = 5_000
+        self.feature_rest_from_iter = 3_000
         self.normal_prop_until_iter = 25_000 
 
         self.normal_prop_interval = 1000
