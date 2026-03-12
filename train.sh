@@ -37,17 +37,7 @@
 #     --lambda_normal_smooth 0.45 \
 #     -r 4
 
-python train.py -s ../blender_data_2 \
-    --eval \
-    --iterations 20000 \
-    --indirect_from_iter 10000 \
-    --volume_render_until_iter 0 \
-    --initial 1 \
-    --init_until_iter 5000 \
-    --lambda_normal_smooth 0.45 \
-    -r 2
-
-# python train.py -s ../kitchen \
+# python train.py -s ../blender_data_2 \
 #     --eval \
 #     --iterations 20000 \
 #     --indirect_from_iter 10000 \
@@ -56,3 +46,23 @@ python train.py -s ../blender_data_2 \
 #     --init_until_iter 5000 \
 #     --lambda_normal_smooth 0.45 \
 #     -r 2
+
+# python train.py -s ../kitchen_fipt \
+#     --eval \
+#     --iterations 20000 \
+#     --indirect_from_iter 10000 \
+#     --volume_render_until_iter 0 \
+#     --initial 1 \
+#     --init_until_iter 6000 \
+#     --lambda_normal_smooth 0.45 \
+#     -r 2
+
+python train.py -s ../kitchen_part \
+    --eval \
+    --iterations 20000 \
+    --indirect_from_iter 10000 \
+    --volume_render_until_iter 0 \
+    --initial 1 \
+    --init_until_iter 6000 \
+    --lambda_normal_smooth 0.45 \
+    -r 2

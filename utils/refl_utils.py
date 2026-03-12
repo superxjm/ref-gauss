@@ -128,6 +128,11 @@ def depth_to_pointcloud(depth, intrinsic, c2w, stride=4, depth_threshold=50.0):
     points_w = (c2w @ pts_cam).T[:, :3]
     return points_w
 
+def get_intersections(HWK, R, T, surf_depth=None): #RT W2C
+
+    rays_cam, rays_o = sample_camera_rays_unnormalize(HWK, R, T)
+    intersections = rays_o + surf_depth.permute(1, 2, 0) * rays_cam
+    return intersections
 
 def get_specular_color_surfel(envmap: torch.Tensor, albedo, HWK, R, T, c2w, normal_map, render_alpha, scaling_modifier = 1.0, refl_strength = None, roughness = None, pc=None, surf_depth=None, indirect_light=None): #RT W2C
     global FG_LUT

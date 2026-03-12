@@ -34,10 +34,115 @@ try:
     TENSORBOARD_FOUND = True
 except ImportError:
     TENSORBOARD_FOUND = False
+os.environ["OPENCV_IO_ENABLE_OPENEXR"]="1"
 import cv2
+import OpenEXR
+import Imath
 
+def export_all_views_at_iteration(scene, render_fn, pipe, background, opt, iteration, model_path):
+    print(f"\n[EXPORT] Starting full export for iteration {iteration}...")
+    
+    # 1. 定义输出根目录，例如 output/xxx/out20000
+    export_root = os.path.join(model_path, f"out{iteration}")
+    os.makedirs(export_root, exist_ok=True)
 
+    # 2. 定义16个子文件夹的名称 (对应 render_pkg 的内容)
+    # 注意：这里的顺序必须和下面 visualization_list 组装的顺序严格一致
+    folder_names = [
+        "01_gt", "02_render", "03_base_color", "04_base_color1",
+        "05_diffuse", "06_specular", "07_refl_strength", "08_roughness",
+        "09_alpha", "10_depth", "11_rend_normal", "12_surf_normal", 
+        "13_error"
+    ]
+    # 如果开启了 indirect，会多出3张图，凑齐16张
+    if opt.indirect:
+        folder_names.extend(["14_visibility", "15_direct_light", "16_indirect_light"])
 
+    # 3. 创建所有子文件夹
+    for name in folder_names:
+        os.makedirs(os.path.join(export_root, name), exist_ok=True)
+
+    # 4. 遍历所有训练相机
+    with torch.no_grad():
+        for cam in tqdm(scene.getTrainCameras(), desc=f"Exporting views {iteration}"):
+            # 渲染当前视角
+            render_pkg = render_fn(cam, scene.gaussians, pipe, background, srgb=opt.srgb, opt=opt)
+            
+            # 准备数据 (逻辑参考 save_training_vis 的非 initial_stage 部分)
+            gt_image = cam.original_image.cuda()
+            error_map = torch.abs(gt_image - render_pkg["render"])
+            
+
+            # [新增] 创建空白的占位 Tensor，以防 render_initial 阶段缺少 PBR 相关的键
+            dummy_3ch = torch.zeros_like(render_pkg["render"])
+            dummy_1ch = torch.zeros_like(render_pkg["render"][0:1, ...]) # 单通道
+
+            rend_normal = render_pkg["rend_normal"]
+            rend_normal = torch.nn.functional.normalize(rend_normal, dim=0)
+            surf_normal = render_pkg["surf_normal"]
+            surf_normal = torch.nn.functional.normalize(surf_normal, dim=0)
+
+            # 组装列表，顺序必须和上面的 folder_names 一一对应
+            visualization_list = [
+                gt_image,                                      # 01
+                render_pkg["render"],                          # 02
+                render_pkg.get("base_color_map", dummy_3ch),   # 03 (缺失时输出黑图)
+                render_pkg.get("base_color_map1", dummy_3ch),  # 04
+                render_pkg.get("diffuse_map", dummy_3ch),      # 05
+                render_pkg.get("specular_map", dummy_3ch),     # 06
+                render_pkg.get("refl_strength_map", dummy_1ch).repeat(3, 1, 1), # 07
+                render_pkg.get("roughness_map", dummy_1ch).repeat(3, 1, 1),     # 08
+                render_pkg.get("rend_alpha", dummy_1ch).repeat(3, 1, 1),        # 09
+                visualize_depth(render_pkg.get("surf_depth", dummy_1ch)),       # 10
+                rend_normal * 0.5 + 0.5,                       # 11
+                surf_normal * 0.5 + 0.5,                       # 12
+                error_map,                                     # 13
+            ]
+
+            if opt.indirect:
+                visualization_list += [
+                    render_pkg.get("visibility", dummy_1ch).repeat(3, 1, 1),  # 14
+                    render_pkg.get("direct_light", dummy_3ch),                # 15
+                    render_pkg.get("indirect_light", dummy_3ch),              # 16
+                ]
+            
+            # 5. 保存每一张图到对应的文件夹
+            # 确保列表长度和文件夹数量一致，防止越界
+            num_items = min(len(visualization_list), len(folder_names))
+            
+            for i in range(num_items):
+                img_tensor = visualization_list[i]
+                folder_name = folder_names[i]
+                
+                # 文件名使用相机名
+                save_path = os.path.join(export_root, folder_name, f"{cam.image_name}.png")
+                save_image(img_tensor, save_path)
+    
+    print(f"[EXPORT] Done. Saved to {export_root}")
+
+def read_exr_depth(path):
+    exr = OpenEXR.InputFile(path)
+    header = exr.header()
+
+    # image size
+    dw = header['dataWindow']
+    w = dw.max.x - dw.min.x + 1
+    h = dw.max.y - dw.min.y + 1
+
+    # always force FLOAT32 output
+    FLOAT = Imath.PixelType(Imath.PixelType.FLOAT)
+
+    channels = header['channels'].keys()
+
+    # Depth usually stored in Z channel
+    if "Z" in channels:
+        depth = exr.channel("Z", FLOAT)
+    else:
+        # fallback: sometimes stored in R
+        depth = exr.channel("R", FLOAT)
+
+    depth = np.frombuffer(depth, dtype=np.float32).reshape(h, w)
+    return depth
 
 def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, model_path, debug_from=None):
     first_iter = 0
@@ -101,8 +206,8 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
         gaussians.update_learning_rate(iteration)
 
-        # Increase SH levels every 1000 iterations
-        if iteration > opt.feature_rest_from_iter and iteration % 1000 == 0:
+        # Increase SH levels every 2000 iterations
+        if iteration > opt.feature_rest_from_iter and iteration % 3000 == 0:
             gaussians.oneupSHdegree()
         
         # Control the init stage
@@ -144,6 +249,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         ######################
         # 尝试从相机获取 normal
         gt_normal = getattr(viewpoint_cam, "normal", None)
+        gt_depth = getattr(viewpoint_cam, "gt_depth", None)
         dilated_edges = getattr(viewpoint_cam, "dilated_edges", None)
 
         # 如果相机里没有 normal，且这是第一次遇到这个相机，我们尝试去硬盘加载
@@ -152,13 +258,21 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             # dataset.source_path 是数据根目录
             # viewpoint_cam.image_name 是文件名 (如 r_0)
             normal_path = os.path.join(dataset.source_path, "normal", f"{viewpoint_cam.image_name}.png")
+            depth_path = os.path.join(dataset.source_path, "gt_depth", f"{viewpoint_cam.image_name}.exr")
             
             # 检查文件是否存在
             if os.path.exists(normal_path):
                 try:
                     from PIL import Image
                     import torchvision.transforms.functional as tf   
-                    # 加载图片
+
+                    depth_image = read_exr_depth(depth_path)
+                    if depth_image.shape[1] != viewpoint_cam.image_width or depth_image.shape[0] != viewpoint_cam.image_height:
+                        depth_image = cv2.resize(depth_image, (viewpoint_cam.image_width, viewpoint_cam.image_height), interpolation=cv2.INTER_NEAREST)
+                    gt_depth = torch.tensor(depth_image, dtype=torch.float32).cuda()
+                    # print(gt_depth)
+                    # input()
+
                     with Image.open(normal_path) as pil_img:
                         # 确保和 GT Image 尺寸一致
                         if pil_img.size != (viewpoint_cam.image_width, viewpoint_cam.image_height):
@@ -189,6 +303,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                     
                     # 缓存到相机对象中
                     # 这样下次训练到这个视角时，就不用再读硬盘了，速度不会变慢
+                    setattr(viewpoint_cam, "gt_depth", gt_depth)
                     setattr(viewpoint_cam, "normal", gt_normal)
                     setattr(viewpoint_cam, "dilated_edges", dilated_edges)
                     # print(gt_normal.dtype)
@@ -215,14 +330,20 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             gt_normal = gt_normal.cuda()
             dilated_edges = dilated_edges.cuda()
             rend_normal_cam = render_pkg['rend_normal_cam'] 
+            rend_normal = render_pkg['rend_normal'] 
+            surf_depth = render_pkg['surf_depth'] 
             rend_alpha = render_pkg['rend_alpha'] 
 
             gt_normal = gt_normal * 2.0 - 1.0 
             gt_normal = torch.nn.functional.normalize(gt_normal, dim=0) 
+
+            # depth_gt_loss = 1.0 * ((surf_depth - gt_depth) ** 2).mean()
+            # total_loss += depth_gt_loss
     
             # 求 Normal World GT 的 loss
             # lambda_gt_normal = getattr(opt, "lambda_gt_normal", 0.1)
             normal_gt_error = 1 - (rend_normal_cam * gt_normal).sum(dim=0)[None]
+            # normal_gt_error = 1 - (rend_normal * gt_normal).sum(dim=0)[None]
             normal_gt_loss = 0.5 * (normal_gt_error[dilated_edges < 255]).mean()
             normal_gt_loss += 0.1 * (normal_gt_error[dilated_edges == 255]).mean()
             # print((dilated_edges < 255).sum())
@@ -238,7 +359,9 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             if 'roughness_map' in render_pkg:
                 rend_roughness = render_pkg['roughness_map']
                 roughness_error = torch.abs(1 - rend_roughness)
-                lambda_roughness = getattr(opt, "lambda_roughness", 0.001)
+                lambda_roughness = getattr(opt, "lambda_roughness", 0.1)
+                if iteration > 10000:
+                    lambda_roughness = getattr(opt, "lambda_roughness", 0.005)
                 roughness_loss = lambda_roughness * (roughness_error).mean()
                 total_loss += roughness_loss
 
@@ -320,9 +443,9 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             training_report(tb_writer, iteration, Ll1, loss, l1_loss, iter_start.elapsed_time(iter_end),
                             testing_iterations, scene, render, {"pipe": pipe, "bg_color": background, "opt":opt})
 
-            if iteration in saving_iterations:
-                print(f"\n[ITER {iteration}] Saving Gaussians")
-                scene.save(iteration)
+            # if iteration in saving_iterations:
+            #     print(f"\n[ITER {iteration}] Saving Gaussians")
+            #     scene.save(iteration)
 
             # Densification
             if iteration < opt.densify_until_iter and iteration != opt.volume_render_until_iter:
@@ -389,6 +512,12 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             if iteration in checkpoint_iterations:
                 print(f"\n[ITER {iteration}] Saving Checkpoint")
                 torch.save((gaussians.capture(), iteration), scene.model_path + f"/chkpnt{iteration}.pth")
+
+            if iteration in [20000]:
+                print(f"\n[TRIGGER] Exporting separate folders for iteration {iteration}...")
+                #确保使用当前的渲染方法
+                current_render = select_render_method(iteration, opt, initial_stage)
+                export_all_views_at_iteration(scene, current_render, pipe, background, opt, iteration, model_path)
 
         iteration += 1
 
