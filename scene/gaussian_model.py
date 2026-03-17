@@ -552,9 +552,16 @@ class GaussianModel:
             torch.save(self.env_map_2.state_dict(), save_path)
                 
 
-    def reset_opacity0(self):
+    # def reset_opacity0(self):
+    #     opacities_new = self.inverse_opacity_activation(torch.min(self.get_opacity, torch.ones_like(self.get_opacity)*0.01))
+    #     optimizable_tensors = self.replace_tensor_to_optimizer(opacities_new, "opacity")
+    #     self._opacity = optimizable_tensors["opacity"]
+
+    def reset_opacity0(self, exclusive_msk = None):
         opacities_new = self.inverse_opacity_activation(torch.min(self.get_opacity, torch.ones_like(self.get_opacity)*0.01))
+        opacities_new[exclusive_msk] = self._opacity[exclusive_msk]
         optimizable_tensors = self.replace_tensor_to_optimizer(opacities_new, "opacity")
+        if "opacity" not in optimizable_tensors: return
         self._opacity = optimizable_tensors["opacity"]
 
     def reset_opacity1(self, exclusive_msk = None):

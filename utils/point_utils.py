@@ -23,6 +23,26 @@ def depths_to_points(view, depthmap):
     points = depthmap.reshape(-1, 1) * rays_d + rays_o
     return points
 
+def points_to_uvd(view, points):
+    c2w = (view.world_view_transform.T).inverse()
+    W, H = view.image_width, view.image_height
+    ndc2pix = torch.tensor([
+        [W / 2, 0, 0, (W) / 2],
+        [0, H / 2, 0, (H) / 2],
+        [0, 0, 0, 1]
+    ]).float().cuda().T
+    projection_matrix = c2w.T @ view.full_proj_transform
+    intrins = (projection_matrix @ ndc2pix)[:3,:3].T
+    R = c2w[:3,:3]
+    O = c2w[:3,3]
+    # world -> camera
+    points_cam = (points - O) @ R
+    depth = points_cam[:,2]
+    # camera -> pixel
+    pixels_h = points_cam @ intrins.T
+    pixels = pixels_h[:,:2] / pixels_h[:,2:3]
+    return pixels, depth
+
 def depth_to_normal(view, depth):
     """
         view: view camera

@@ -15,6 +15,7 @@ import os
 import math
 from tqdm import tqdm
 from utils.render_utils import save_img_f32, save_img_u8
+from utils.point_utils import points_to_uvd
 from functools import partial
 import open3d as o3d
 import trimesh
@@ -97,6 +98,39 @@ class GaussianExtractor(object):
         self.viewpoint_stack = []
 
     @torch.no_grad()
+    def filter_invisible_gs(self, viewpoint_stack):
+        self.viewpoint_stack = viewpoint_stack
+        gs_points = self.gaussians.get_xyz
+        N = gs_points.shape[0]
+        # 初始化为 +inf，用来取最小值
+        gs_occlusion = torch.full((N,), float('-inf'), device='cuda')
+        for i, viewpoint_cam in tqdm(enumerate(self.viewpoint_stack), total=len(self.viewpoint_stack)):
+
+            render_pkg = self.render(viewpoint_cam, self.gaussians)
+            depth = render_pkg['surf_depth'].squeeze()  # (H,W)
+            gs_uv, gs_depth = points_to_uvd(viewpoint_cam, gs_points)
+            H, W = depth.shape
+            x = torch.round(gs_uv[:,0]).long()
+            y = torch.round(gs_uv[:,1]).long()
+            valid = (x >= 0) & (x < W) & (y >= 0) & (y < H)
+            x_valid = x[valid]
+            y_valid = y[valid]
+            depth_points_valid = gs_depth[valid]
+            depth_map_sampled = depth[y_valid, x_valid]
+            delta = depth_map_sampled - depth_points_valid
+            # 更新最小delta
+            gs_occlusion[valid] = torch.maximum(gs_occlusion[valid], delta)
+
+        num = gs_occlusion.numel() 
+        threshold = -0.05
+        print("Number of gs_occlusion < threshold:", (gs_occlusion < threshold).sum().item())
+        print("Number of gs_occlusion >= threshold:", (gs_occlusion >= threshold).sum().item())
+        print("Number of gs_occlusion:", num)
+        # input('gs_occlusion')
+        exclusive_msk = (gs_occlusion >= threshold)
+        return exclusive_msk
+        
+    @torch.no_grad()
     def reconstruction(self, viewpoint_stack):
         """
         reconstruct radiance field given cameras
@@ -105,7 +139,7 @@ class GaussianExtractor(object):
         self.viewpoint_stack = viewpoint_stack
         for i, viewpoint_cam in tqdm(enumerate(self.viewpoint_stack), desc="reconstruct radiance fields"):
             render_pkg = self.render(viewpoint_cam, self.gaussians)
-            rgb = render_pkg['diffuse_map']
+            rgb = render_pkg['render']
             alpha = render_pkg['rend_alpha']
             normal = torch.nn.functional.normalize(render_pkg['rend_normal'], dim=0)
             depth = render_pkg['surf_depth']

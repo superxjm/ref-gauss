@@ -100,39 +100,46 @@ def reflection(w_o, normal):
     return w_k, NdotV
 
 
-def depth_to_pointcloud(depth, intrinsic, c2w, stride=4, depth_threshold=50.0):
-    """针对 Blender/NeRF 的固定反投影：
-    - 深度是 z-buffer（camera-space Z 沿视线）
-    - 相机前向为 -Z（forward_sign = -1）
-    - 图像 v 向下，需要翻转为 camera Y 向上（flip_y = -1）
-    """
-    depth = np.squeeze(depth)
-    h, w = depth.shape
-    u, v = np.meshgrid(np.arange(0, w, stride), np.arange(0, h, stride))
-    z = depth[::stride, ::stride]
+# def depth_to_pointcloud(depth, intrinsic, c2w, stride=4, depth_threshold=50.0):
+#     """针对 Blender/NeRF 的固定反投影：
+#     - 深度是 z-buffer（camera-space Z 沿视线）
+#     - 相机前向为 -Z（forward_sign = -1）
+#     - 图像 v 向下，需要翻转为 camera Y 向上（flip_y = -1）
+#     """
+#     depth = np.squeeze(depth)
+#     h, w = depth.shape
+#     u, v = np.meshgrid(np.arange(0, w, stride), np.arange(0, h, stride))
+#     z = depth[::stride, ::stride]
 
-    mask = (z > 1e-6) & (z < depth_threshold)
-    u = u[mask].astype(np.float32)
-    v = v[mask].astype(np.float32)
-    z = z[mask]
+#     mask = (z > 1e-6) & (z < depth_threshold)
+#     u = u[mask].astype(np.float32)
+#     v = v[mask].astype(np.float32)
+#     z = z[mask]
 
-    fx, fy, cx, cy = intrinsic
-    # 固定常量
-    forward_sign = 1.0
-    flip_y = 1.0
+#     fx, fy, cx, cy = intrinsic
+#     # 固定常量
+#     forward_sign = 1.0
+#     flip_y = 1.0
 
-    # z-buffer -> camera space
-    x = (u - cx) * z / fx
-    y = flip_y * (v - cy) * z / fy
-    pts_cam = np.stack([x, y, forward_sign * z, np.ones_like(z)], axis=0)
-    points_w = (c2w @ pts_cam).T[:, :3]
-    return points_w
+#     # z-buffer -> camera space
+#     x = (u - cx) * z / fx
+#     y = flip_y * (v - cy) * z / fy
+#     pts_cam = np.stack([x, y, forward_sign * z, np.ones_like(z)], axis=0)
+#     points_w = (c2w @ pts_cam).T[:, :3]
+#     return points_w
 
-def get_intersections(HWK, R, T, surf_depth=None): #RT W2C
+# def depth_to_pc_world(HWK, R, T, surf_depth=None): #RT W2C
 
-    rays_cam, rays_o = sample_camera_rays_unnormalize(HWK, R, T)
-    intersections = rays_o + surf_depth.permute(1, 2, 0) * rays_cam
-    return intersections
+#     rays_cam, rays_o = sample_camera_rays_unnormalize(HWK, R, T)
+#     intersections = rays_o + surf_depth.permute(1, 2, 0) * rays_cam
+#     return intersections
+
+# def pc_world_to_depth(HWK, R, T, pc_world=None): #RT W2C
+
+#     rays_cam, rays_o = sample_camera_rays_unnormalize(HWK, R, T)
+#     vec = pc_world - rays_o
+#     depth = (vec * rays_cam).sum(-1)
+#     return depth
 
 def get_specular_color_surfel(envmap: torch.Tensor, albedo, HWK, R, T, c2w, normal_map, render_alpha, scaling_modifier = 1.0, refl_strength = None, roughness = None, pc=None, surf_depth=None, indirect_light=None): #RT W2C
     global FG_LUT

@@ -14,7 +14,7 @@ import torch
 import open3d as o3d
 from random import randint
 from utils.loss_utils import calculate_loss, l1_loss
-from gaussian_renderer import render_surfel, render_initial, render_volume, network_gui
+from gaussian_renderer import render_surfel, render_initial, network_gui
 import sys
 from scene import Scene, GaussianModel
 from utils.general_utils import safe_state
@@ -239,7 +239,9 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
         # Set render
         render = select_render_method(iteration, opt, initial_stage)
+
         render_pkg = render(viewpoint_cam, gaussians, pipe, background, srgb=opt.srgb, opt=opt)
+
         image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
 
         gt_image = viewpoint_cam.original_image.cuda()
@@ -258,7 +260,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             # dataset.source_path 是数据根目录
             # viewpoint_cam.image_name 是文件名 (如 r_0)
             normal_path = os.path.join(dataset.source_path, "normal", f"{viewpoint_cam.image_name}.png")
-            depth_path = os.path.join(dataset.source_path, "gt_depth", f"{viewpoint_cam.image_name}.exr")
+            # depth_path = os.path.join(dataset.source_path, "gt_depth", f"{viewpoint_cam.image_name}.exr")
             
             # 检查文件是否存在
             if os.path.exists(normal_path):
@@ -266,12 +268,10 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                     from PIL import Image
                     import torchvision.transforms.functional as tf   
 
-                    depth_image = read_exr_depth(depth_path)
-                    if depth_image.shape[1] != viewpoint_cam.image_width or depth_image.shape[0] != viewpoint_cam.image_height:
-                        depth_image = cv2.resize(depth_image, (viewpoint_cam.image_width, viewpoint_cam.image_height), interpolation=cv2.INTER_NEAREST)
-                    gt_depth = torch.tensor(depth_image, dtype=torch.float32).cuda()
-                    # print(gt_depth)
-                    # input()
+                    # depth_image = read_exr_depth(depth_path)
+                    # if depth_image.shape[1] != viewpoint_cam.image_width or depth_image.shape[0] != viewpoint_cam.image_height:
+                    #     depth_image = cv2.resize(depth_image, (viewpoint_cam.image_width, viewpoint_cam.image_height), interpolation=cv2.INTER_NEAREST)
+                    # gt_depth = torch.tensor(depth_image, dtype=torch.float32).cuda()
 
                     with Image.open(normal_path) as pil_img:
                         # 确保和 GT Image 尺寸一致
@@ -303,7 +303,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                     
                     # 缓存到相机对象中
                     # 这样下次训练到这个视角时，就不用再读硬盘了，速度不会变慢
-                    setattr(viewpoint_cam, "gt_depth", gt_depth)
+                    # setattr(viewpoint_cam, "gt_depth", gt_depth)
                     setattr(viewpoint_cam, "normal", gt_normal)
                     setattr(viewpoint_cam, "dilated_edges", dilated_edges)
                     # print(gt_normal.dtype)
@@ -359,9 +359,9 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             if 'roughness_map' in render_pkg:
                 rend_roughness = render_pkg['roughness_map']
                 roughness_error = torch.abs(1 - rend_roughness)
-                lambda_roughness = getattr(opt, "lambda_roughness", 0.1)
+                lambda_roughness = getattr(opt, "lambda_roughness", 0.01)
                 if iteration > 10000:
-                    lambda_roughness = getattr(opt, "lambda_roughness", 0.005)
+                    lambda_roughness = getattr(opt, "lambda_roughness", 0.01)
                 roughness_loss = lambda_roughness * (roughness_error).mean()
                 total_loss += roughness_loss
 
@@ -408,6 +408,9 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
         iter_end.record()
 
+        # if iteration > 20000 and iteration % 1000 == 0:
+        #     exclusive_msk = gaussExtractor.filter_invisible_gs(scene.getTrainCameras())
+        #     gaussians.reset_opacity0(exclusive_msk)
 
         with torch.no_grad():
             
@@ -513,7 +516,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 print(f"\n[ITER {iteration}] Saving Checkpoint")
                 torch.save((gaussians.capture(), iteration), scene.model_path + f"/chkpnt{iteration}.pth")
 
-            if iteration in [20000]:
+            if iteration in [20000, 30000]:
                 print(f"\n[TRIGGER] Exporting separate folders for iteration {iteration}...")
                 #确保使用当前的渲染方法
                 current_render = select_render_method(iteration, opt, initial_stage)
@@ -536,8 +539,6 @@ def select_render_method(iteration, opt, initial_stage):
 
     if initial_stage:
         render = render_initial
-    elif iteration <= opt.volume_render_until_iter:
-        render = render_volume
     else:   
         render = render_surfel
 
