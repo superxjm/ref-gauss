@@ -230,7 +230,22 @@ class EnvLight(torch.nn.Module):
             (torch.clamp(roughness, self.min_roughness, self.max_roughness) - self.min_roughness) / (self.max_roughness - self.min_roughness) * (len(self.specular) - 2), 
             (torch.clamp(roughness, self.max_roughness, 1.0) - self.max_roughness) / (1.0 - self.max_roughness) + len(self.specular) - 2
         )
-        
+    
+    def compute_loss(self):
+        # 1. Zero-constraint loss (鼓励接近零)
+        loss_to_zero = torch.mean(torch.abs(self.base))
+
+        # 2. Channel similarity loss (鼓励三个通道相似)
+        loss_channels_similarity = torch.mean(torch.var(self.base, dim=4))
+
+        # 权重，可以根据需要调整
+        lambda_zero = 0.002  # 约束到零的损失的权重
+        lambda_similarity = 0.002  # 通道相似性的损失权重
+
+        # 计算总损失
+        total_loss = lambda_zero * loss_to_zero# + lambda_similarity * loss_channels_similarity
+
+        return total_loss
 
     def __call__(self, l, mode=None, roughness=None):
         """
@@ -289,11 +304,9 @@ class MultiEnvLight(torch.nn.Module):
         if hasattr(self.light, 'training_setup'):
             self.light.training_setup(training_args)
     
-    def loss(self):
+    def compute_loss(self):
         # 直接调用底层的 light
-        if hasattr(self.light, 'loss'):
-            return self.light.loss()
-        return 0.0
+        return self.light.compute_loss()
 
     def build_mips(self):
         # 直接调用，不再需要循环

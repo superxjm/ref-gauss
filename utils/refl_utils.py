@@ -221,7 +221,7 @@ def get_specular_color_surfel(envmap: torch.Tensor, albedo, HWK, R, T, c2w, norm
         # # input()
         # intersections = rays_o + surf_depth.permute(1, 2, 0) * rays_cam
         # import pdb;pdb.set_trace()
-        visibility_threshold = 0.3#1.0
+        visibility_threshold = 0.5#1.0
         _, _, depth = pc.ray_tracer.trace(intersections[mask] + visibility_threshold / 40.0 * rays_refl[mask], rays_refl[mask])
         visibility[mask] = (depth >= visibility_threshold).float().unsqueeze(-1)
         # visibility[mask] = (depth >= 0.3).float().unsqueeze(-1)

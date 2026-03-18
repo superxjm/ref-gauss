@@ -337,6 +337,10 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             gt_normal = gt_normal * 2.0 - 1.0 
             gt_normal = torch.nn.functional.normalize(gt_normal, dim=0) 
 
+            envmap = gaussians.get_envmap
+            envmap_loss = envmap.compute_loss()
+            total_loss += envmap_loss
+
             # depth_gt_loss = 1.0 * ((surf_depth - gt_depth) ** 2).mean()
             # total_loss += depth_gt_loss
     
