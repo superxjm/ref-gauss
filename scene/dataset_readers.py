@@ -236,7 +236,7 @@ def readCamerasFromTransforms(path, transformsfile, white_background, extension=
 
             # get the world-to-camera transform and set R, T
             w2c = np.linalg.inv(c2w)
-            w2c_R = w2c[:3,:3]
+            # w2c_R = w2c[:3,:3]
             # print(f'w2c_R: {w2c_R}')
             # print(f'RR^T: {w2c_R @ w2c_R.T}')
             # print(path, frame["file_path"] + extension)
@@ -247,6 +247,8 @@ def readCamerasFromTransforms(path, transformsfile, white_background, extension=
             T = w2c[:3, 3]
 
             image_path = os.path.join(path, cam_name)
+            # print(image_path)
+            # input()
             image_name = Path(cam_name).stem
             image = Image.open(image_path)
 

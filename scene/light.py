@@ -239,11 +239,11 @@ class EnvLight(torch.nn.Module):
         loss_channels_similarity = torch.mean(torch.var(self.base, dim=4))
 
         # 权重，可以根据需要调整
-        lambda_zero = 0.002  # 约束到零的损失的权重
-        lambda_similarity = 0.002  # 通道相似性的损失权重
+        lambda_zero = 0.0001  # 约束到零的损失的权重
+        lambda_similarity = 0.0001  # 通道相似性的损失权重
 
         # 计算总损失
-        total_loss = lambda_zero * loss_to_zero# + lambda_similarity * loss_channels_similarity
+        total_loss = lambda_similarity * loss_channels_similarity # lambda_zero * loss_to_zero# + 
 
         return total_loss
 

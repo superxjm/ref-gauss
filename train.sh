@@ -57,9 +57,9 @@
 #     --lambda_normal_smooth 0.45 \
 #     -r 2
 
-python train.py -s ../kitchen_flash \
+python train.py -s ../kitchen_bsdf \
     --eval \
-    --iterations 30000 \
+    --iterations 20000 \
     --indirect_from_iter 10000 \
     --volume_render_until_iter 0 \
     --initial 1 \

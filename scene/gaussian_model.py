@@ -431,6 +431,17 @@ class GaussianModel:
             max_roughness=args.envmap_max_roughness,
             trainable=True
         ).cuda()
+
+        self.env_map_2 = MultiEnvLight(
+            centers = probe_centers,
+            k = 4,
+            path=None,
+            device='cuda',
+            max_res=args.envmap_max_res,
+            min_roughness=args.envmap_min_roughness,
+            max_roughness=args.envmap_max_roughness,
+            trainable=True
+        ).cuda()
         # input('finish init env_map')
         #########################################
 
@@ -451,7 +462,8 @@ class GaussianModel:
             {'params': [self._rotation], 'lr': training_args.rotation_lr, "name": "rotation"},
             # {'params': self.env_map.parameters(), 'lr': training_args.envmap_cubemap_lr, "name": "env"},     
             # {'params': self.env_map_2.parameters(), 'lr': training_args.envmap_cubemap_lr, "name": "env2"}
-            {'params': self.env_map.parameters(), 'lr': training_args.envmap_cubemap_lr, "name": "env"},     
+            {'params': self.env_map.parameters(), 'lr': training_args.envmap_cubemap_lr, "name": "env"}, 
+            {'params': self.env_map_2.parameters(), 'lr': training_args.envmap_cubemap_lr, "name": "env2"},    
         ]
 
         self._normal1.requires_grad_(requires_grad=False)

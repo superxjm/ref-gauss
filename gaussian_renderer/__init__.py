@@ -273,8 +273,8 @@ def render_surfel(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.T
             sh2rgb = eval_sh(pc.active_sh_degree, shs_view, dir_pp_normalized)
             colors_precomp = torch.clamp_min(sh2rgb + 0.5, 0.0)
         else:
-            # shs = pc.get_features
-            shs = pc.get_features_and_set_rest_to_zero
+            shs = pc.get_features
+            # shs = pc.get_features_and_set_rest_to_zero
     else:
         colors_precomp = override_color
 
@@ -358,6 +358,8 @@ def render_surfel(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.T
     else:
         specular, extra_dict = get_specular_color_surfel(pc.get_envmap, albedo.permute(1,2,0), viewpoint_camera.HWK, viewpoint_camera.R, viewpoint_camera.T, c2w, normal_map, render_alpha.permute(1,2,0), refl_strength=refl_strength.permute(1,2,0), roughness=roughness.permute(1,2,0), pc=pc, surf_depth=surf_depth)
 
+    # diffuse_wo_shadow = pc.get_envmap_2(normal_map, mode="diffuse") * albedo
+
     # Integrate the final image
     # final_image = (1-refl_strength) * base_color + specular 
     final_image = base_color + specular 
@@ -369,7 +371,6 @@ def render_surfel(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.T
         base_color = linear_to_srgb(base_color)
         albedo = linear_to_srgb(albedo)
         specular = linear_to_srgb(specular)
-
 
     final_image = final_image + bg_color[:, None, None] * (1 - render_alpha)
   
@@ -387,6 +388,7 @@ def render_surfel(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.T
     results =  {"render": final_image,
             "refl_strength_map": refl_strength,
             "diffuse_map": (1-refl_strength) * base_color,
+            "diffuse_map_wo_shadow": None,
             "specular_map": specular,
             "base_color_map": albedo,
             "roughness_map": roughness,

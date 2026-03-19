@@ -207,7 +207,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         gaussians.update_learning_rate(iteration)
 
         # Increase SH levels every 2000 iterations
-        if iteration > opt.feature_rest_from_iter and iteration % 3000 == 0:
+        if iteration > opt.feature_rest_from_iter and iteration % 1000 == 0:
             gaussians.oneupSHdegree()
         
         # Control the init stage
@@ -259,7 +259,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             # 拼凑 normal 文件路径
             # dataset.source_path 是数据根目录
             # viewpoint_cam.image_name 是文件名 (如 r_0)
-            normal_path = os.path.join(dataset.source_path, "normal", f"{viewpoint_cam.image_name}.png")
+            normal_path = os.path.join(dataset.source_path, "normal_world", f"{viewpoint_cam.image_name}.png")
             # depth_path = os.path.join(dataset.source_path, "gt_depth", f"{viewpoint_cam.image_name}.exr")
             
             # 检查文件是否存在
@@ -285,8 +285,8 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                         # 只取前3个通道 (以防是 RGBA)
                         if gt_normal.shape[0] > 3:
                             gt_normal = gt_normal[:3, ...]
-                        gt_normal[1] = 1 - gt_normal[1]
-                        gt_normal[2] = 1 - gt_normal[2]
+                        # gt_normal[1] = 1 - gt_normal[1]
+                        # gt_normal[2] = 1 - gt_normal[2]
 
                         # 转为 NumPy 数组并转换为灰度图像
                         normal_np = gt_normal.permute(1, 2, 0).cpu().numpy()  # Convert from CHW to HWC
@@ -345,9 +345,8 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             # total_loss += depth_gt_loss
     
             # 求 Normal World GT 的 loss
-            # lambda_gt_normal = getattr(opt, "lambda_gt_normal", 0.1)
-            normal_gt_error = 1 - (rend_normal_cam * gt_normal).sum(dim=0)[None]
-            # normal_gt_error = 1 - (rend_normal * gt_normal).sum(dim=0)[None]
+            # normal_gt_error = 1 - (rend_normal_cam * gt_normal).sum(dim=0)[None]
+            normal_gt_error = 1 - (rend_normal * gt_normal).sum(dim=0)[None]
             normal_gt_loss = 0.5 * (normal_gt_error[dilated_edges < 255]).mean()
             normal_gt_loss += 0.1 * (normal_gt_error[dilated_edges == 255]).mean()
             # print((dilated_edges < 255).sum())
@@ -359,6 +358,8 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             lambda_alpha = getattr(opt, "lambda_alpha", 0.1)
             alpha_loss = lambda_alpha * (alpha_error).mean()
             total_loss += alpha_loss
+
+            # TODO 加一个约束albedo的loss，约束albedo的梯度和mvinverse的albedo的梯度相等
 
             if 'roughness_map' in render_pkg:
                 rend_roughness = render_pkg['roughness_map']
@@ -420,6 +421,10 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             
             if iteration % TEST_INTERVAL == 0 or iteration == first_iter + 1 or iteration == opt.volume_render_until_iter + 1:
                 save_training_vis(viewpoint_cam, gaussians, background, render, pipe, opt, iteration, initial_stage)
+                if iteration in [20000, 30000]:
+                    print(f"\n[TRIGGER] Exporting separate folders for iteration {iteration}...")
+                    current_render = select_render_method(iteration, opt, initial_stage)
+                    export_all_views_at_iteration(scene, current_render, pipe, background, opt, iteration, model_path)
 
             ema_loss_for_log = 0.4 * loss + 0.6 * ema_loss_for_log
             ema_dist_for_log = 0.4 * dist_loss + 0.6 * ema_dist_for_log
@@ -519,12 +524,6 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             if iteration in checkpoint_iterations:
                 print(f"\n[ITER {iteration}] Saving Checkpoint")
                 torch.save((gaussians.capture(), iteration), scene.model_path + f"/chkpnt{iteration}.pth")
-
-            if iteration in [20000, 30000]:
-                print(f"\n[TRIGGER] Exporting separate folders for iteration {iteration}...")
-                #确保使用当前的渲染方法
-                current_render = select_render_method(iteration, opt, initial_stage)
-                export_all_views_at_iteration(scene, current_render, pipe, background, opt, iteration, model_path)
 
         iteration += 1
 
