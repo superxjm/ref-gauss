@@ -177,16 +177,16 @@ def render_initial(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.
     
     final_image = torch.clamp_max(final_image, 1.0)
 
-    rets =  {"render": final_image,
-        "viewspace_points": means2D,
-        "visibility_filter" : radii > 0,
-        "radii": radii,
-        'rend_alpha': render_alpha,
-        'rend_normal': render_normal,
-        'rend_normal_cam': render_normal_cam,
-        'rend_dist': render_dist,
-        'surf_depth': surf_depth,
-        'surf_normal': surf_normal
+    rets = {"render": final_image,
+            "viewspace_points": means2D,
+            "visibility_filter" : radii > 0,
+            "radii": radii,
+            'rend_alpha': render_alpha,
+            'rend_normal': render_normal,
+            'rend_normal_cam': render_normal_cam,
+            'rend_dist': render_dist,
+            'surf_depth': surf_depth,
+            'surf_normal': surf_normal
     }
 
     return rets
@@ -327,12 +327,11 @@ def render_surfel(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.T
         cov3D_precomp = cov3D_precomp,
     )
 
-    base_color = rendered_image
+    diffuse = rendered_image
     refl_strength = rendered_features[:1]
     roughness = rendered_features[1:2]
     albedo = rendered_features[2:5]
     indirect_light = rendered_features[5:8]
-
 
     # 2DGS normal and regularizations
     regularizations = compute_2dgs_normal_and_regularizations(allmap, viewpoint_camera, pipe)
@@ -346,31 +345,19 @@ def render_surfel(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.T
     # Use normal map computed in 2DGS pipeline to perform reflection query
     render_normal  = torch.nn.functional.normalize(render_normal , dim=0) 
     normal_map = render_normal.permute(1,2,0)
-    # normal_map = normal_map / render_alpha.permute(1,2,0).clamp_min(1e-6)
-    
-    # print(viewpoint_camera.R)
-    # print(viewpoint_camera.T)
-    # print(viewpoint_camera.world_view_transform)
-    # input('viewpoint_camera')
     c2w = np.linalg.inv(viewpoint_camera.world_view_transform.T.cpu().numpy())
     if opt.indirect:
         specular, extra_dict = get_specular_color_surfel(pc.get_envmap, albedo.permute(1,2,0), viewpoint_camera.HWK, viewpoint_camera.R, viewpoint_camera.T, c2w, normal_map, render_alpha.permute(1,2,0), refl_strength=refl_strength.permute(1,2,0), roughness=roughness.permute(1,2,0), pc=pc, surf_depth=surf_depth, indirect_light=indirect_light.permute(1,2,0))
     else:
         specular, extra_dict = get_specular_color_surfel(pc.get_envmap, albedo.permute(1,2,0), viewpoint_camera.HWK, viewpoint_camera.R, viewpoint_camera.T, c2w, normal_map, render_alpha.permute(1,2,0), refl_strength=refl_strength.permute(1,2,0), roughness=roughness.permute(1,2,0), pc=pc, surf_depth=surf_depth)
 
-    # diffuse_wo_shadow = pc.get_envmap_2(normal_map, mode="diffuse") * albedo
-
     # Integrate the final image
     # final_image = (1-refl_strength) * base_color + specular 
-    final_image = base_color + specular 
-    # refl_strength -> 0
+    final_image = diffuse + specular 
     
     # Transform linear rgb to srgb with nonlinearly distribution between 0 to 1
     if srgb: 
         final_image = linear_to_srgb(final_image)
-        base_color = linear_to_srgb(base_color)
-        albedo = linear_to_srgb(albedo)
-        specular = linear_to_srgb(specular)
 
     final_image = final_image + bg_color[:, None, None] * (1 - render_alpha)
   
@@ -378,36 +365,28 @@ def render_surfel(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.T
     render_normal_cam  = torch.nn.functional.normalize(render_normal_cam , dim=0) 
     final_image = torch.clamp_max(final_image, 1.0)
 
-    if opt.indirect:
-        indirect_color = (1-refl_strength) * base_color + extra_dict['indirect_color']
-        indirect_color = indirect_color + bg_color[:, None, None] * (1 - render_alpha)
-        extra_dict['indirect_color'] = indirect_color
-
     # Those Gaussians that were frustum culled or had a radius of 0 were not visible.
     # They will be excluded from value updates used in the splitting criteria.
     results =  {"render": final_image,
-            "refl_strength_map": refl_strength,
-            "diffuse_map": (1-refl_strength) * base_color,
-            "diffuse_map_wo_shadow": None,
-            "specular_map": specular,
-            "base_color_map": albedo,
-            "roughness_map": roughness,
-            "viewspace_points": means2D,
-            "visibility_filter" : radii > 0,
-            "radii": radii,
-            ## normal, accum alpha, dist, depth map
-            'rend_alpha': render_alpha,
-            'rend_normal': render_normal,
-            'rend_normal_cam': render_normal_cam,
-            'rend_dist': render_dist,
-            'surf_depth': surf_depth,
-            'surf_normal': surf_normal
+                "refl_strength_map": refl_strength,
+                "diffuse_map": diffuse,
+                "specular_map": specular,
+                "albedo_map": albedo,
+                "roughness_map": roughness,
+                "viewspace_points": means2D,
+                "visibility_filter" : radii > 0,
+                "radii": radii,
+                ## normal, accum alpha, dist, depth map
+                'rend_alpha': render_alpha,
+                'rend_normal': render_normal,
+                'rend_normal_cam': render_normal_cam,
+                'rend_dist': render_dist,
+                'surf_depth': surf_depth,
+                'surf_normal': surf_normal
     }
     
     if opt.indirect:
         results.update(extra_dict)
-
-
 
     return results
 

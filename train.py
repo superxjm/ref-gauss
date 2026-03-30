@@ -38,6 +38,7 @@ os.environ["OPENCV_IO_ENABLE_OPENEXR"]="1"
 import cv2
 import OpenEXR
 import Imath
+from utils.refl_utils import sample_camera_rays_unnormalize
 
 def export_all_views_at_iteration(scene, render_fn, pipe, background, opt, iteration, model_path):
     print(f"\n[EXPORT] Starting full export for iteration {iteration}...")
@@ -49,10 +50,10 @@ def export_all_views_at_iteration(scene, render_fn, pipe, background, opt, itera
     # 2. 定义16个子文件夹的名称 (对应 render_pkg 的内容)
     # 注意：这里的顺序必须和下面 visualization_list 组装的顺序严格一致
     folder_names = [
-        "01_gt", "02_render", "03_base_color", "04_base_color1",
-        "05_diffuse", "06_specular", "07_refl_strength", "08_roughness",
-        "09_alpha", "10_depth", "11_rend_normal", "12_surf_normal", 
-        "13_error"
+        "01_gt", "02_render", "03_diffuse_map", "04_specular_map",
+        "05_albedo_map", "06_roughness_map", "07_refl_strength", 
+        "08_alpha", "09_depth", "10_rend_normal", "11_surf_normal", 
+        "12_error"
     ]
     # 如果开启了 indirect，会多出3张图，凑齐16张
     if opt.indirect:
@@ -80,23 +81,22 @@ def export_all_views_at_iteration(scene, render_fn, pipe, background, opt, itera
             rend_normal = render_pkg["rend_normal"]
             rend_normal = torch.nn.functional.normalize(rend_normal, dim=0)
             surf_normal = render_pkg["surf_normal"]
-            surf_normal = torch.nn.functional.normalize(surf_normal, dim=0)
+            surf_normal = torch.nn.functional.normalize(surf_normal, dim=0) 
 
             # 组装列表，顺序必须和上面的 folder_names 一一对应
             visualization_list = [
-                gt_image,                                      # 01
-                render_pkg["render"],                          # 02
-                render_pkg.get("base_color_map", dummy_3ch),   # 03 (缺失时输出黑图)
-                render_pkg.get("base_color_map1", dummy_3ch),  # 04
-                render_pkg.get("diffuse_map", dummy_3ch),      # 05
-                render_pkg.get("specular_map", dummy_3ch),     # 06
-                render_pkg.get("refl_strength_map", dummy_1ch).repeat(3, 1, 1), # 07
-                render_pkg.get("roughness_map", dummy_1ch).repeat(3, 1, 1),     # 08
-                render_pkg.get("rend_alpha", dummy_1ch).repeat(3, 1, 1),        # 09
-                visualize_depth(render_pkg.get("surf_depth", dummy_1ch)),       # 10
-                rend_normal * 0.5 + 0.5,                       # 11
-                surf_normal * 0.5 + 0.5,                       # 12
-                error_map,                                     # 13
+                gt_image,                                    
+                render_pkg["render"],                        
+                render_pkg.get("diffuse_map", dummy_3ch),   
+                render_pkg.get("specular_map", dummy_3ch),  
+                render_pkg.get("albedo_map", dummy_3ch),       
+                render_pkg.get("roughness_map", dummy_1ch).repeat(3, 1, 1),  
+                render_pkg.get("refl_strength_map", dummy_1ch).repeat(3, 1, 1),
+                render_pkg.get("rend_alpha", dummy_1ch).repeat(3, 1, 1),        
+                visualize_depth(render_pkg.get("surf_depth", dummy_1ch)),       
+                rend_normal * 0.5 + 0.5,                       
+                surf_normal * 0.5 + 0.5,                      
+                error_map,                                     
             ]
 
             if opt.indirect:
@@ -218,49 +218,39 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         if iteration == opt.indirect_from_iter + 1:
             opt.indirect = 1
 
-
         # if iteration == (opt.volume_render_until_iter + 1) and opt.volume_render_until_iter > opt.init_until_iter:
         #     reset_gaussian_para(gaussians, opt)
 
         # Initialize envmap
         if not initial_stage:
-            if iteration <= opt.volume_render_until_iter:
-                envmap2 = gaussians.get_envmap_2 
-                envmap2.build_mips()
-            else:
-                envmap = gaussians.get_envmap 
-                envmap.build_mips()
+            envmap2 = gaussians.get_envmap_2 
+            envmap2.build_mips()
+            envmap = gaussians.get_envmap 
+            envmap.build_mips()
 
         # Pick a random Camera
         if not viewpoint_stack:
             viewpoint_stack = scene.getTrainCameras().copy()
         viewpoint_cam = viewpoint_stack.pop(randint(0, len(viewpoint_stack) - 1))
 
-
         # Set render
         render = select_render_method(iteration, opt, initial_stage)
-
         render_pkg = render(viewpoint_cam, gaussians, pipe, background, srgb=opt.srgb, opt=opt)
-
         image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
-
         gt_image = viewpoint_cam.original_image.cuda()
-        # print(f"gt image shape: {gt_image.shape}")
-        # input()
         
         ######################
         # 尝试从相机获取 normal
         gt_normal = getattr(viewpoint_cam, "normal", None)
         gt_depth = getattr(viewpoint_cam, "gt_depth", None)
+        gt_albedo = getattr(viewpoint_cam, "albedo", None)
         dilated_edges = getattr(viewpoint_cam, "dilated_edges", None)
 
         # 如果相机里没有 normal，且这是第一次遇到这个相机，我们尝试去硬盘加载
         if gt_normal is None:
-            # 拼凑 normal 文件路径
-            # dataset.source_path 是数据根目录
-            # viewpoint_cam.image_name 是文件名 (如 r_0)
-            normal_path = os.path.join(dataset.source_path, "normal_world", f"{viewpoint_cam.image_name}.png")
+            normal_path = os.path.join(dataset.source_path, "normal", f"{viewpoint_cam.image_name}.png")
             # depth_path = os.path.join(dataset.source_path, "gt_depth", f"{viewpoint_cam.image_name}.exr")
+            albedo_path = os.path.join(dataset.source_path, "albedo", f"{viewpoint_cam.image_name}.png")
             
             # 检查文件是否存在
             if os.path.exists(normal_path):
@@ -273,21 +263,33 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                     #     depth_image = cv2.resize(depth_image, (viewpoint_cam.image_width, viewpoint_cam.image_height), interpolation=cv2.INTER_NEAREST)
                     # gt_depth = torch.tensor(depth_image, dtype=torch.float32).cuda()
 
+                    with Image.open(albedo_path) as pil_img:
+                        # 确保和 GT Image 尺寸一致
+                        if pil_img.size != (viewpoint_cam.image_width, viewpoint_cam.image_height):
+                            pil_img = pil_img.resize((viewpoint_cam.image_width, viewpoint_cam.image_height), Image.NEAREST)
+                        # 转为 Tensor 并移到 CUDA
+                        # 此时范围是 [0, 1]
+                        gt_albedo = tf.to_tensor(pil_img).cuda()
+                        # 只取前3个通道 (以防是 RGBA)
+                        if gt_albedo.shape[0] > 3:
+                            gt_albedo = gt_albedo[:3, ...]
+                        # 缓存到相机对象中
+                        # print(gt_albedo.shape)
+                        # input()
+                        setattr(viewpoint_cam, "albedo", gt_albedo)
+
                     with Image.open(normal_path) as pil_img:
                         # 确保和 GT Image 尺寸一致
                         if pil_img.size != (viewpoint_cam.image_width, viewpoint_cam.image_height):
                             pil_img = pil_img.resize((viewpoint_cam.image_width, viewpoint_cam.image_height), Image.NEAREST)
-                        
                         # 转为 Tensor 并移到 CUDA
                         # 此时范围是 [0, 1]
                         gt_normal = tf.to_tensor(pil_img).cuda()
-                        
                         # 只取前3个通道 (以防是 RGBA)
                         if gt_normal.shape[0] > 3:
                             gt_normal = gt_normal[:3, ...]
-                        # gt_normal[1] = 1 - gt_normal[1]
-                        # gt_normal[2] = 1 - gt_normal[2]
-
+                        gt_normal[1] = 1 - gt_normal[1]
+                        gt_normal[2] = 1 - gt_normal[2]
                         # 转为 NumPy 数组并转换为灰度图像
                         normal_np = gt_normal.permute(1, 2, 0).cpu().numpy()  # Convert from CHW to HWC
                         gray_image = cv2.cvtColor(normal_np, cv2.COLOR_RGB2GRAY)  # 转换为灰度图 
@@ -306,11 +308,6 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                     # setattr(viewpoint_cam, "gt_depth", gt_depth)
                     setattr(viewpoint_cam, "normal", gt_normal)
                     setattr(viewpoint_cam, "dilated_edges", dilated_edges)
-                    # print(gt_normal.dtype)
-                    # print(gt_normal.shape)
-                    # print(dilated_edges.dtype)
-                    # print(dilated_edges.shape)
-                    # input()
                     
                     # 打印一次成功信息 (仅限前几次)
                     if iteration < first_iter + 50: 
@@ -344,14 +341,10 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             # depth_gt_loss = 1.0 * ((surf_depth - gt_depth) ** 2).mean()
             # total_loss += depth_gt_loss
     
-            # 求 Normal World GT 的 loss
-            # normal_gt_error = 1 - (rend_normal_cam * gt_normal).sum(dim=0)[None]
-            normal_gt_error = 1 - (rend_normal * gt_normal).sum(dim=0)[None]
+            normal_gt_error = 1 - (rend_normal_cam * gt_normal).sum(dim=0)[None]
+            # normal_gt_error = 1 - (rend_normal * gt_normal).sum(dim=0)[None]
             normal_gt_loss = 0.5 * (normal_gt_error[dilated_edges < 255]).mean()
             normal_gt_loss += 0.1 * (normal_gt_error[dilated_edges == 255]).mean()
-            # print((dilated_edges < 255).sum())
-            # print((dilated_edges == 255).sum())
-            # input('dilated_edges num')
             total_loss += normal_gt_loss
 
             alpha_error = torch.abs(1 - rend_alpha)
@@ -364,41 +357,123 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             if 'roughness_map' in render_pkg:
                 rend_roughness = render_pkg['roughness_map']
                 roughness_error = torch.abs(1 - rend_roughness)
-                lambda_roughness = getattr(opt, "lambda_roughness", 0.01)
-                if iteration > 10000:
-                    lambda_roughness = getattr(opt, "lambda_roughness", 0.01)
+                lambda_roughness = getattr(opt, "lambda_roughness", 0.005)
                 roughness_loss = lambda_roughness * (roughness_error).mean()
                 total_loss += roughness_loss
 
-            if iteration % 1000 == 0:
-                # 定义保存路径
-                debug_dir = os.path.join(args.model_path, "debug_normal_vis")
-                os.makedirs(debug_dir, exist_ok=True)
-                
-                # 准备可视化数据: [-1, 1] -> [0, 1]
-                # gt_normal_vis: Ground Truth Normal
-                gt_vis = (gt_normal.detach() + 1.0) * 0.5
-                gt_vis = gt_vis.clamp(0.0, 1.0)
-                
-                # render_normal_vis: Rendered Normal
-                rend_vis = (rend_normal_cam.detach() + 1.0) * 0.5
-                rend_vis = rend_vis.clamp(0.0, 1.0)
-                
-                # error_vis: Error Map (越亮误差越大)
-                # normal_gt_error 是 [1, H, W]，为了可视化方便可以不用 repeat，save_image 会处理
-                err_vis = normal_gt_error.detach().clamp(0.0, 1.0)
-                
-                # 拼接图片方便对比 (GT | Render | Error)
-                # cat 在宽度方向拼接 (dim=2)
-                combined_vis = torch.cat([gt_vis, rend_vis, err_vis.repeat(3, 1, 1)], dim=2)
-                
-                # 文件名: iter_camName.png
-                fname = f"iter{iteration:05d}_{viewpoint_cam.image_name}.png"
-                save_path = os.path.join(debug_dir, fname)
-                
+                 # Diffuse-Albedo Loss 和 Albedo Gradient Loss
+            if gt_albedo is not None and gt_albedo is not False and (not initial_stage):
+                diffuse_map = render_pkg['diffuse_map']  # [3, H, W]
+                # shadow_map = render_pkg['shadow_map']    # [1, H, W]
+                albedo_map = render_pkg['albedo_map']  # [3, H, W]
+                rend_normal = render_pkg['rend_normal']  # [3, H, W]
+
+                # 获取 envmap
+                envmap_2 = gaussians.get_envmap_2
+
+                # 计算3D位置
+                surf_depth = render_pkg['surf_depth']  # [1, H, W]
+                rays_d, rays_o = sample_camera_rays_unnormalize(
+                    viewpoint_cam.HWK,
+                    viewpoint_cam.R,
+                    viewpoint_cam.T
+                )  # rays_d: [H, W, 3], rays_o: [3]
+                intersections = rays_o + surf_depth.permute(1, 2, 0) * rays_d  # [H, W, 3]
+
+                # 用法线方向查询 diffuse envmap
+                # rend_normal_for_diffuse: [3, H, W] -> [H, W, 3]
+                normal_for_env_diffuse = rend_normal.permute(1, 2, 0).detach()  # [H, W, 3]
+
+                # 查询 diffuse envmap (mode="diffuse")
+                # 传入 xyz=intersections 以选择最近的探针
+                if hasattr(envmap_2, 'light'):
+                    # MultiEnvLight
+                    env_diffuse = envmap_2(normal_for_env_diffuse.reshape(-1, 3), mode="diffuse", roughness=None, xyz=intersections.reshape(-1, 3))
+                    env_diffuse = env_diffuse.reshape(normal_for_env_diffuse.shape)  # [H, W, 3]
+                else:
+                    # 单个 EnvLight
+                    env_diffuse = envmap_2(normal_for_env_diffuse.reshape(-1, 3), mode="diffuse", roughness=None)
+                # print(env_diffuse.shape)
+                # print(normal_for_env_diffuse.shape)
+                # input()
+                env_diffuse = env_diffuse.reshape(normal_for_env_diffuse.shape)  # [H, W, 3]
+
+                # 转换为 [3, H, W]
+                env_diffuse = env_diffuse.permute(2, 0, 1)  # [3, H, W]
+
                 import torchvision
-                torchvision.utils.save_image(combined_vis, save_path)
-                print(f"[DEBUG] Saved normal visualization to {save_path}")
+                # 打印一下env_diffuse 图 和 normal_for_envmap 图
+                if iteration % 1000 == 0:
+                    env_diffuse_vis = env_diffuse.detach().cpu()
+                    # env_diffuse_vis = env_diffuse_vis.clamp(0.0, 1.0)
+                    # normal_for_envmap_vis = normal_for_envmap.detach().cpu()
+                    # normal_for_envmap_vis = normal_for_envmap_vis * 0.5 + 0.5
+                    # normal_for_envmap_vis = normal_for_envmap_vis.clamp(0.0, 1.0)
+                    save_image(env_diffuse_vis, os.path.join(model_path, f"debug_env_diffuse_iter{iteration}.png"))
+                    env_diff = gaussians.render_env_map_diffuse()
+                    env_spec = gaussians.render_env_map_spec()
+
+                    grid = []
+                    for idx, env2 in enumerate(env_diff["env2"]):
+                        grid.append(env2.permute(2, 0, 1) / 4.0)
+                    if len(grid) >= 3:
+                        grid = make_grid(grid, nrow=3, padding=10)
+                    else:
+                        grid = make_grid(grid, nrow=1, padding=10)
+
+                    grid2 = []
+                    for idx, env2 in enumerate(env_spec["env2"]):
+                        grid2.append(env2.permute(2, 0, 1) / 4.0)
+                    if len(grid2) >= 3:
+                        grid2 = make_grid(grid2, nrow=3, padding=10)
+                    else:
+                        grid2 = make_grid(grid2, nrow=1, padding=10)
+                    save_image(grid, os.path.join(model_path, f"diff_env_map{iteration}_env.png"))
+                    save_image(grid2, os.path.join(model_path, f"spec_env_map{iteration}_env.png"))
+                    
+                    # save_image(normal_for_envmap_vis, os.path.join(model_path, f"debug_normal_for_envmap_iter{iteration}.png"))
+
+
+                # 计算 base_color = render_albedo * env_diffuse * shadow
+                # pseudo_basecolor = render_albedo * env_diffuse * shadow_map
+                pseudo_basecolor = albedo_map * env_diffuse
+                if iteration % 1000 == 0 and (not initial_stage):
+                    pseudo_basecolor_vis = pseudo_basecolor.detach().cpu()
+                    pseudo_basecolor_vis = linear_to_srgb(pseudo_basecolor_vis)
+                    save_image(pseudo_basecolor_vis, os.path.join(model_path, f"debug_pseudo_basecolor_iter{iteration}.png"))
+
+                # Loss 1: Diffuse-Albedo L1 Loss
+                lambda_diffuse_albedo = getattr(opt, "lambda_diffuse_albedo", 5.0)
+                diffuse_albedo_loss = F.l1_loss(diffuse_map, pseudo_basecolor)
+                total_loss += lambda_diffuse_albedo * diffuse_albedo_loss
+
+                # Loss 2: Albedo Gradient L1 Loss
+                def compute_spatial_gradient(img):
+                    """计算图像的空间梯度"""
+                    # img: [C, H, W]
+                    # 返回 x 和 y 方向的梯度
+                    # x 方向梯度: img[:, :, 1:] - img[:, :, :-1]  -> [C, H, W-1]
+                    # y 方向梯度: img[:, 1:, :] - img[:, :-1, :]  -> [C, H-1, W]
+                    grad_x = img[:, :, 1:] - img[:, :, :-1]  # [C, H, W-1]
+                    grad_y = img[:, 1:, :] - img[:, :-1, :]  # [C, H-1, W]
+                    return grad_x, grad_y
+
+                # 计算两个 albedo 的梯度
+                delta_render_x, delta_render_y = compute_spatial_gradient(albedo_map)
+                
+                # 打印两个delta
+                # print(f"[AlbedoGradLoss] iter={iteration}, delta_render_x={delta_render_x.mean().item():.6f}, delta_render_y={delta_render_y.mean().item():.6f}")
+                
+                delta_gt_x, delta_gt_y = compute_spatial_gradient(gt_albedo)
+
+                # Gradient L1 Loss (分别对 x 和 y 方向的梯度计算 loss)
+                lambda_albedo_grad = getattr(opt, "lambda_albedo_grad", 0.5)
+                albedo_grad_loss = F.l1_loss(delta_render_x, delta_gt_x) + F.l1_loss(delta_render_y, delta_gt_y)
+                total_loss += lambda_albedo_grad * albedo_grad_loss
+
+                if iteration % 1000 == 0:
+                    print(f"[DiffuseAlbedoLoss] iter={iteration}, diffuse_loss={diffuse_albedo_loss.item():.6f}, grad_loss={albedo_grad_loss.item():.6f}")
+           
         ######################
 
         def get_outside_msk():
@@ -581,38 +656,18 @@ def save_training_vis(viewpoint_cam, gaussians, background, render_fn, pipe, opt
                 render_pkg["surf_normal"] * 0.5 + 0.5, 
                 error_map 
             ]
-
-        elif iteration <= opt.volume_render_until_iter:
-            visualization_list = [
-                viewpoint_cam.original_image.cuda(),  
-                render_pkg["render"], 
-                render_pkg["base_color_map"], 
-                render_pkg["diffuse_map"],      
-                render_pkg["specular_map"],  
-                render_pkg["refl_strength_map"].repeat(3, 1, 1),  
-                render_pkg["roughness_map"].repeat(3, 1, 1),
-                render_pkg["rend_alpha"].repeat(3, 1, 1),  
-                visualize_depth(render_pkg["surf_depth"]), 
-                render_pkg["rend_normal"] * 0.5 + 0.5,  
-                render_pkg["surf_normal"] * 0.5 + 0.5, 
-                error_map
-            ]
-            if opt.indirect:
-                visualization_list += [
-                    render_pkg["visibility"].repeat(3, 1, 1),
-                    render_pkg["direct_light"],
-                    render_pkg["indirect_light"],
-                ]
-
         else:
+            render_pkg["diffuse_map"] = linear_to_srgb(render_pkg["diffuse_map"])
+            render_pkg["specular_map"] = linear_to_srgb(render_pkg["specular_map"])
+            render_pkg["albedo_map"] = linear_to_srgb(render_pkg["albedo_map"])
             visualization_list = [
                 viewpoint_cam.original_image.cuda(),  
                 render_pkg["render"],  
-                render_pkg["base_color_map"],  
                 render_pkg["diffuse_map"],
                 render_pkg["specular_map"],
-                render_pkg["refl_strength_map"].repeat(3, 1, 1),  
+                render_pkg["albedo_map"],  
                 render_pkg["roughness_map"].repeat(3, 1, 1),
+                render_pkg["refl_strength_map"].repeat(3, 1, 1),  
                 render_pkg["rend_alpha"].repeat(3, 1, 1),  
                 visualize_depth(render_pkg["surf_depth"]),  
                 render_pkg["rend_normal"] * 0.5 + 0.5,  

@@ -301,6 +301,56 @@ class GaussianModel:
             }
         return {'env1': self.env_map(directions1, mode="pure_env"), 'env2': self.env_map(directions2, mode="pure_env")}
 
+    def render_env_map_diffuse(self, H=512):
+        # if H == self.env_H:
+        #     directions1 = self.env_directions1
+        #     directions2 = self.env_directions2
+        # else:
+        #     W = H * 2
+        #     directions1 = get_env_direction1(H, W)
+        #     directions2 = get_env_direction2(H, W)
+        # return {'env1': self.env_map(directions1, mode="pure_env"), 'env2': self.env_map(directions2, mode="pure_env")}
+        if H == self.env_H:
+            directions1 = self.env_directions1
+            directions2 = self.env_directions2
+        else:
+            W = H * 2
+            directions1 = get_env_direction1(H, W)
+            directions2 = get_env_direction2(H, W)
+        if isinstance(self.env_map_2, MultiEnvLight):
+            env1_all = self.env_map_2.light(directions1, mode="diffuse")
+            env2_all = self.env_map_2.light(directions2, mode="diffuse")
+            env1_list = [env1_all[i] for i in range(env1_all.shape[0])]
+            env2_list = [env2_all[i] for i in range(env2_all.shape[0])]
+            
+            return {
+                'env1': env1_list, 
+                'env2': env2_list
+            }
+        return {'env1': self.env_map_2(directions1, mode="diffuse"), 'env2': self.env_map_2(directions2, mode="diffuse")}
+
+    def render_env_map_spec(self, H=512):
+        if H == self.env_H:
+            directions1 = self.env_directions1
+            directions2 = self.env_directions2
+        else:
+            W = H * 2
+            directions1 = get_env_direction1(H, W)
+            directions2 = get_env_direction2(H, W)
+        roughness1 = torch.full(directions1.shape[:-1], 1, device=directions1.device, dtype=directions1.dtype)
+        roughness2 = torch.full(directions2.shape[:-1], 1, device=directions2.device, dtype=directions2.dtype)
+        if isinstance(self.env_map_2, MultiEnvLight):
+            env1_all = self.env_map_2.light(directions1, roughness=roughness1)
+            env2_all = self.env_map_2.light(directions2, roughness=roughness2)
+            env1_list = [env1_all[i] for i in range(env1_all.shape[0])]
+            env2_list = [env2_all[i] for i in range(env2_all.shape[0])]
+            
+            return {
+                'env1': env1_list, 
+                'env2': env2_list
+            }
+        return {'env1': self.env_map_2(directions1, roughness=roughness1), 'env2': self.env_map_2(directions2, roughness=roughness2)}
+
     def render_env_map_2(self, H=512):
         if H == self.env_H:
             directions1 = self.env_directions1
@@ -401,6 +451,9 @@ class GaussianModel:
         extent = max_xyz - min_xyz
 
         grid_res = torch.round(extent / extent.min()).int()
+        grid_res = torch.ones_like(grid_res)
+        # print(grid_res)
+        # input()
         print(f"[MultiEnvLight] Grid Split: {grid_res} based on extent {extent.cpu().numpy()}")
         
         # 生成网格中心点坐标

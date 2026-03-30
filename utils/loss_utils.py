@@ -111,7 +111,7 @@ def calculate_loss(viewpoint_camera, pc, render_pkg, opt, iteration):
         tb_dict["loss_normal_render_depth"] = loss_normal_render_depth
 
         if iteration > 12000:
-            loss = loss + 10.0 * opt.lambda_normal_render_depth * loss_normal_render_depth
+            loss = loss + 2.0 * opt.lambda_normal_render_depth * loss_normal_render_depth
         else:
             loss = loss + opt.lambda_normal_render_depth * loss_normal_render_depth
     else:
