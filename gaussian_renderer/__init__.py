@@ -236,6 +236,7 @@ def render_surfel(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.T
     refl = pc.get_refl
     ori_color = pc.get_ori_color
     roughness = pc.get_rough
+    shadow = pc.get_shadow
 
     # If precomputed 3d covariance is provided, use it. If not, then it will be computed from
     # scaling / rotation by the rasterizer.
@@ -320,7 +321,7 @@ def render_surfel(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.T
         means2D = means2D,
         shs = shs,
         colors_precomp = colors_precomp,
-        features = torch.cat((refl, roughness, ori_color, indirect), dim=-1),
+        features = torch.cat((refl, roughness, ori_color, indirect, shadow), dim=-1),
         opacities = opacity,
         scales = scales,
         rotations = rotations,
@@ -332,6 +333,7 @@ def render_surfel(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.T
     roughness = rendered_features[1:2]
     albedo = rendered_features[2:5]
     indirect_light = rendered_features[5:8]
+    shadow_map = rendered_features[8:9]
 
     # 2DGS normal and regularizations
     regularizations = compute_2dgs_normal_and_regularizations(allmap, viewpoint_camera, pipe)
@@ -373,6 +375,7 @@ def render_surfel(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.T
                 "specular_map": specular,
                 "albedo_map": albedo,
                 "roughness_map": roughness,
+                "shadow_map": shadow_map,
                 "viewspace_points": means2D,
                 "visibility_filter" : radii > 0,
                 "radii": radii,

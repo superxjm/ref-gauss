@@ -86,6 +86,8 @@ class GaussianModel:
         self._diffuse_color = torch.empty(0) 
         self._metalness = torch.empty(0) 
         self._roughness = torch.empty(0) 
+        # 新增 shadow
+        self._shadow = torch.empty(0)  # shadow/occlusion attribute
         self._features_dc = torch.empty(0)
         self._features_rest = torch.empty(0)
         self._indirect_dc = torch.empty(0)
@@ -125,11 +127,13 @@ class GaussianModel:
         return (
             self.active_sh_degree,
             self._xyz,
-            self._refl_strength, 
-            self._metalness, 
-            self._roughness, 
-            self._ori_color, 
-            self._diffuse_color, 
+            # 新增 shadow
+            self._refl_strength,
+            self._metalness,
+            self._roughness,
+            self._shadow,
+            self._ori_color,
+            self._diffuse_color,
             self._features_dc,
             self._features_rest,
             self._indirect_dc,
@@ -138,37 +142,39 @@ class GaussianModel:
             self._scaling,
             self._rotation,
             self._opacity,
-            self._normal1,  
-            self._normal2,  
+            self._normal1,
+            self._normal2,
             self.max_radii2D,
             self.xyz_gradient_accum,
             self.denom,
             self.optimizer.state_dict(),
             self.spatial_lr_scale,
         )
-    
+
     def restore(self, model_args, training_args):
-        (self.active_sh_degree, 
-        self._xyz, 
-        self._refl_strength,  
-        self._metalness, 
-        self._roughness, 
-        self._ori_color, 
+        # 新增 shadow
+        (self.active_sh_degree,
+        self._xyz,
+        self._refl_strength,
+        self._metalness,
+        self._roughness,
+        self._shadow,
+        self._ori_color,
         self._diffuse_color,
-        self._features_dc, 
+        self._features_dc,
         self._features_rest,
-        self._indirect_dc, 
+        self._indirect_dc,
         self._indirect_rest,
         self._indirect_asg,
-        self._scaling, 
-        self._rotation, 
+        self._scaling,
+        self._rotation,
         self._opacity,
-        self._normal1,  
-        self._normal2,  
-        self.max_radii2D, 
-        xyz_gradient_accum, 
+        self._normal1,
+        self._normal2,
+        self.max_radii2D,
+        xyz_gradient_accum,
         denom,
-        opt_dict, 
+        opt_dict,
         self.spatial_lr_scale) = model_args
         self._indirect_asg = nn.Parameter(torch.zeros(self._rotation.shape[0], 32, 5, device='cuda').requires_grad_(True))
         self.training_setup(training_args)
@@ -202,8 +208,14 @@ class GaussianModel:
         return self.refl_activation(self._refl_strength)
 
     @property
-    def get_rough(self): 
+    def get_rough(self):
         return self.roughness_activation(self._roughness)
+
+    # 新增 shadow
+    @property
+    def get_shadow(self):
+        """Shadow/occlusion attribute, range [0, 1] where 1 means fully lit, 0 means fully occluded"""
+        return torch.sigmoid(self._shadow)
 
     @property
     def get_ori_color(self): 
@@ -409,6 +421,12 @@ class GaussianModel:
         roughness = self.inverse_roughness_activation(torch.ones_like(opacities).cuda() * self.init_roughness_value)
         roughness = roughness.cuda()
 
+        # 新增 shadow/occlusion attribute的初始化，初始值设为0.8（sigmoid(1.386) ≈ 0.8）
+
+        # Initialize shadow to 0.8 (sigmoid(1.386) ≈ 0.8, meaning mostly lit)
+        shadow = inverse_sigmoid(torch.ones_like(opacities).cuda() * 0.8)
+        shadow = shadow.cuda()
+
         def initialize_ori_color(point_cloud, init_color= 0.5, noise_level=0.05):
             base_color = torch.full((point_cloud.shape[0], 3), init_color, dtype=torch.float, device="cuda")
             noise = (torch.rand(point_cloud.shape[0], 3, dtype=torch.float, device="cuda") - 0.5) * noise_level
@@ -421,11 +439,13 @@ class GaussianModel:
 
         self._xyz = nn.Parameter(fused_point_cloud.requires_grad_(True))
 
-        self._refl_strength = nn.Parameter(refl_strength.requires_grad_(True))  
-        self._ori_color = nn.Parameter(ori_color.requires_grad_(True)) 
+        self._refl_strength = nn.Parameter(refl_strength.requires_grad_(True))
+        self._ori_color = nn.Parameter(ori_color.requires_grad_(True))
         self._diffuse_color = nn.Parameter(diffuse_color.requires_grad_(True))  # Initialize _diffuse_color
-        self._roughness = nn.Parameter(roughness.requires_grad_(True)) 
-        self._metalness = nn.Parameter(metalness.requires_grad_(True)) 
+        # 新增 shadow
+        self._roughness = nn.Parameter(roughness.requires_grad_(True))
+        self._metalness = nn.Parameter(metalness.requires_grad_(True))
+        self._shadow = nn.Parameter(shadow.requires_grad_(True))  # shadow/occlusion attribute
         self._scaling = nn.Parameter(scales.requires_grad_(True))
         self._rotation = nn.Parameter(rots.requires_grad_(True))
         self._opacity = nn.Parameter(opacities.requires_grad_(True))
@@ -451,7 +471,10 @@ class GaussianModel:
         extent = max_xyz - min_xyz
 
         grid_res = torch.round(extent / extent.min()).int()
-        grid_res = torch.ones_like(grid_res)
+        # grid_res = torch.ones_like(grid_res)
+
+        grid_res = torch.tensor([3, 2, 1], device='cuda', dtype=torch.int32)
+
         # print(grid_res)
         # input()
         print(f"[MultiEnvLight] Grid Split: {grid_res} based on extent {extent.cpu().numpy()}")
@@ -476,7 +499,9 @@ class GaussianModel:
         # 初始化 MultiEnvLight
         self.env_map = MultiEnvLight(
             centers = probe_centers,
-            k = 4,
+            grid_res=grid_res,
+            grid_min=probe_centers.amin(dim=0),
+            grid_max=probe_centers.amax(dim=0),
             path=None,
             device='cuda',
             max_res=args.envmap_max_res,
@@ -487,7 +512,9 @@ class GaussianModel:
 
         self.env_map_2 = MultiEnvLight(
             centers = probe_centers,
-            k = 4,
+            grid_res=grid_res,
+            grid_min=probe_centers.amin(dim=0),
+            grid_max=probe_centers.amax(dim=0),
             path=None,
             device='cuda',
             max_res=args.envmap_max_res,
@@ -522,11 +549,13 @@ class GaussianModel:
         self._normal1.requires_grad_(requires_grad=False)
         self._normal2.requires_grad_(requires_grad=False)
         l.extend([
-            {'params': [self._refl_strength], 'lr': training_args.refl_strength_lr, "name": "refl_strength"},  
-            {'params': [self._ori_color], 'lr': training_args.ori_color_lr, "name": "ori_color"},  
-            {'params': [self._diffuse_color], 'lr': training_args.ori_color_lr, "name": "diffuse_color"},  
-            {'params': [self._roughness], 'lr': training_args.roughness_lr, "name": "roughness"},  
-            {'params': [self._metalness], 'lr': training_args.metalness_lr, "name": "metalness"},  
+            # 新增 shadow
+            {'params': [self._refl_strength], 'lr': training_args.refl_strength_lr, "name": "refl_strength"},
+            {'params': [self._ori_color], 'lr': training_args.ori_color_lr, "name": "ori_color"},
+            {'params': [self._diffuse_color], 'lr': training_args.ori_color_lr, "name": "diffuse_color"},
+            {'params': [self._roughness], 'lr': training_args.roughness_lr, "name": "roughness"},
+            {'params': [self._metalness], 'lr': training_args.metalness_lr, "name": "metalness"},
+            {'params': [self._shadow], 'lr': training_args.roughness_lr, "name": "shadow"},  # shadow uses same lr as roughness
             {'params': [self._normal1], 'lr': training_args.normal_lr, "name": "normal1"},
             {'params': [self._normal2], 'lr': training_args.normal_lr, "name": "normal2"},
             {'params': [self._indirect_dc], 'lr': training_args.indirect_lr, "name": "ind_dc"},
@@ -559,10 +588,12 @@ class GaussianModel:
             l.append('ind_rest_{}'.format(i))
         for i in range(self._indirect_asg.shape[1]*self._indirect_asg.shape[2]):
             l.append('ind_asg_{}'.format(i))
+        # 新增 shadow
         l.append('opacity')
-        l.append('refl_strength') 
-        l.append('metalness') 
-        l.append('roughness') 
+        l.append('refl_strength')
+        l.append('metalness')
+        l.append('roughness')
+        l.append('shadow')  # shadow/occlusion attribute
         for i in range(self._ori_color.shape[1]):
             l.append('ori_color_{}'.format(i))
         for i in range(self._diffuse_color.shape[1]):  # Add diffuse_color attributes
@@ -585,14 +616,16 @@ class GaussianModel:
         ind_rest = self._indirect_rest.detach().transpose(1, 2).flatten(start_dim=1).contiguous().cpu().numpy()
         ind_asg = self._indirect_asg.detach().transpose(1, 2).flatten(start_dim=1).contiguous().cpu().numpy()
 
-        refl_strength = self._refl_strength.detach().cpu().numpy()    
-        metalness = self._metalness.detach().cpu().numpy()    
-        roughness = self._roughness.detach().cpu().numpy()    
-        ori_color = self._ori_color.detach().cpu().numpy()    
-        diffuse_color = self._diffuse_color.detach().cpu().numpy()  
-        
+        # 新增 shadow
+        refl_strength = self._refl_strength.detach().cpu().numpy()
+        metalness = self._metalness.detach().cpu().numpy()
+        roughness = self._roughness.detach().cpu().numpy()
+        shadow = self._shadow.detach().cpu().numpy()  # shadow/occlusion attribute
+        ori_color = self._ori_color.detach().cpu().numpy()
+        diffuse_color = self._diffuse_color.detach().cpu().numpy()
+
         normals1 = self._normal1.detach().cpu().numpy()
-        normals2 = self._normal2.detach().cpu().numpy() 
+        normals2 = self._normal2.detach().cpu().numpy()
 
         opacities = self._opacity.detach().cpu().numpy()
         scale = self._scaling.detach().cpu().numpy()
@@ -602,7 +635,9 @@ class GaussianModel:
 
         elements = np.empty(xyz.shape[0], dtype=dtype_full)
 
-        attributes = np.concatenate((xyz, normals1, normals2, f_dc, f_rest, ind_dc, ind_rest, ind_asg, opacities, refl_strength, metalness, roughness, ori_color, diffuse_color, scale, rotation), axis=1)
+        # attributes = np.concatenate((xyz, normals1, normals2, f_dc, f_rest, ind_dc, ind_rest, ind_asg, opacities, refl_strength, metalness, roughness, ori_color, diffuse_color, scale, rotation), axis=1)
+        # 新增 shadow
+        attributes = np.concatenate((xyz, normals1, normals2, f_dc, f_rest, ind_dc, ind_rest, ind_asg, opacities, refl_strength, metalness, roughness, shadow, ori_color, diffuse_color, scale, rotation), axis=1)
 
         elements[:] = list(map(tuple, attributes))
         el = PlyElement.describe(elements, 'vertex')
@@ -785,6 +820,14 @@ class GaussianModel:
         roughness = np.asarray(plydata.elements[0]["roughness"])[..., np.newaxis] # #
         metalness = np.asarray(plydata.elements[0]["metalness"])[..., np.newaxis] # #
 
+        # 新增 shadow
+        # Load shadow if it exists, otherwise initialize to default value
+        try:
+            shadow = np.asarray(plydata.elements[0]["shadow"])[..., np.newaxis]
+        except:
+            # For backward compatibility: initialize shadow to sigmoid(1.386) ≈ 0.8
+            shadow = np.full((xyz.shape[0], 1), inverse_sigmoid(torch.tensor(0.8)).item(), dtype=np.float32)
+
         normal1 = np.stack((np.asarray(plydata.elements[0]["nx"]),
                         np.asarray(plydata.elements[0]["ny"]),
                         np.asarray(plydata.elements[0]["nz"])),  axis=1)
@@ -863,6 +906,11 @@ class GaussianModel:
         self._refl_strength = nn.Parameter(torch.tensor(refl_strength, dtype=torch.float, device="cuda").requires_grad_(True))   # #
         self._metalness = nn.Parameter(torch.tensor(metalness, dtype=torch.float, device="cuda").requires_grad_(True))   # #
         self._roughness = nn.Parameter(torch.tensor(roughness, dtype=torch.float, device="cuda").requires_grad_(True))   # #
+    
+        # 新增 shadow
+
+        self._shadow = nn.Parameter(torch.tensor(shadow, dtype=torch.float, device="cuda").requires_grad_(True))  # shadow/occlusion
+
         self._ori_color = nn.Parameter(torch.tensor(ori_color, dtype=torch.float, device="cuda").requires_grad_(True))   # #
         self._diffuse_color = nn.Parameter(torch.tensor(diffuse_color, dtype=torch.float, device="cuda").requires_grad_(True))   # #
 
@@ -927,6 +975,9 @@ class GaussianModel:
         self._diffuse_color = optimizable_tensors['diffuse_color']    # #
         self._roughness = optimizable_tensors['roughness']    # #
         self._metalness = optimizable_tensors['metalness']    # #
+        # 新增 shadow
+        self._shadow = optimizable_tensors['shadow']  # shadow/occlusion
+        
         self._normal1 = optimizable_tensors["normal1"]        # #
         self._normal2 = optimizable_tensors["normal2"]        # #
 
@@ -967,12 +1018,15 @@ class GaussianModel:
 
         return optimizable_tensors
 
-    def densification_postfix(self, new_xyz, new_refl_strength, new_metalness, new_roughness, new_ori_color, new_diffuse_color, new_features_dc, new_features_rest, new_indirect_dc, new_indirect_asg, new_indirect_rest, new_opacities, new_scaling, new_rotation, new_normal1, new_normal2):
+    # def densification_postfix(self, new_xyz, new_refl_strength, new_metalness, new_roughness, new_ori_color, new_diffuse_color, new_features_dc, new_features_rest, new_indirect_dc, new_indirect_asg, new_indirect_rest, new_opacities, new_scaling, new_rotation, new_normal1, new_normal2):
+    def densification_postfix(self, new_xyz, new_refl_strength, new_metalness, new_roughness, new_shadow, new_ori_color, new_diffuse_color, new_features_dc, new_features_rest, new_indirect_dc, new_indirect_asg, new_indirect_rest, new_opacities, new_scaling, new_rotation, new_normal1, new_normal2):
         d = {"xyz": new_xyz,
-             
+
         "refl_strength": new_refl_strength,    # #
         "metalness": new_metalness,    # #
         "roughness": new_roughness,    # #
+        # 新增 shadow
+        "shadow": new_shadow,  # shadow/occlusion
         "ori_color": new_ori_color,    # #
         "diffuse_color": new_diffuse_color,    # #
         "normal1" : new_normal1,       # #
@@ -980,11 +1034,11 @@ class GaussianModel:
 
         "f_dc": new_features_dc,
         "f_rest": new_features_rest,
-        
+
         "ind_dc": new_indirect_dc,
         "ind_rest": new_indirect_rest,
         "ind_asg": new_indirect_asg,
-        
+
         "opacity": new_opacities,
         "scaling" : new_scaling,
         "rotation" : new_rotation}
@@ -995,6 +1049,8 @@ class GaussianModel:
         self._refl_strength = optimizable_tensors['refl_strength']    # #
         self._metalness = optimizable_tensors['metalness']    # #
         self._roughness = optimizable_tensors['roughness']    # #
+        # 新增 shadow
+        self._shadow = optimizable_tensors['shadow']  # shadow/occlusion
         self._ori_color = optimizable_tensors['ori_color']    # #
         self._diffuse_color = optimizable_tensors['diffuse_color']    # #
         self._normal1 = optimizable_tensors["normal1"]        # #
@@ -1002,11 +1058,11 @@ class GaussianModel:
 
         self._features_dc = optimizable_tensors["f_dc"]
         self._features_rest = optimizable_tensors["f_rest"]
-        
+
         self._indirect_dc = optimizable_tensors["ind_dc"]
         self._indirect_rest = optimizable_tensors["ind_rest"]
         self._indirect_asg = optimizable_tensors["ind_asg"]
-        
+
         self._opacity = optimizable_tensors["opacity"]
         self._scaling = optimizable_tensors["scaling"]
         self._rotation = optimizable_tensors["rotation"]
@@ -1037,19 +1093,23 @@ class GaussianModel:
         new_diffuse_color = self._diffuse_color[selected_pts_mask].repeat(N,1)   # #
         new_roughness = self._roughness[selected_pts_mask].repeat(N,1)   # #
         new_metalness = self._metalness[selected_pts_mask].repeat(N,1)   # #
+        # 新增 shadow
+        new_shadow = self._shadow[selected_pts_mask].repeat(N,1)  # shadow/occlusion
         new_normal1 = self._normal1[selected_pts_mask].repeat(N,1)        # #
         new_normal2 = self._normal2[selected_pts_mask].repeat(N,1)       # #
 
         new_features_dc = self._features_dc[selected_pts_mask].repeat(N,1,1)
         new_features_rest = self._features_rest[selected_pts_mask].repeat(N,1,1)
-        
+
         new_indirect_dc = self._indirect_dc[selected_pts_mask].repeat(N,1,1)
         new_indirect_rest = self._indirect_rest[selected_pts_mask].repeat(N,1,1)
         new_indirect_asg = self._indirect_asg[selected_pts_mask].repeat(N,1,1)
-        
+
         new_opacity = self._opacity[selected_pts_mask].repeat(N,1)
 
-        self.densification_postfix(new_xyz, new_refl_strength, new_metalness, new_roughness, new_ori_color, new_diffuse_color, new_features_dc, new_features_rest, new_indirect_dc, new_indirect_asg, new_indirect_rest, new_opacity, new_scaling, new_rotation, new_normal1, new_normal2)
+        # self.densification_postfix(new_xyz, new_refl_strength, new_metalness, new_roughness, new_ori_color, new_diffuse_color, new_features_dc, new_features_rest, new_indirect_dc, new_indirect_asg, new_indirect_rest, new_opacity, new_scaling, new_rotation, new_normal1, new_normal2)
+        # 新增 shadow
+        self.densification_postfix(new_xyz, new_refl_strength, new_metalness, new_roughness, new_shadow, new_ori_color, new_diffuse_color, new_features_dc, new_features_rest, new_indirect_dc, new_indirect_asg, new_indirect_rest, new_opacity, new_scaling, new_rotation, new_normal1, new_normal2)
 
         prune_filter = torch.cat((selected_pts_mask, torch.zeros(N * selected_pts_mask.sum(), device="cuda", dtype=bool)))
         self.prune_points(prune_filter)
@@ -1059,12 +1119,14 @@ class GaussianModel:
         selected_pts_mask = torch.where(torch.norm(grads, dim=-1) >= grad_threshold, True, False)
         selected_pts_mask = torch.logical_and(selected_pts_mask,
                                               torch.max(self.get_scaling, dim=1).values <= self.percent_dense*scene_extent)
-        
+
         new_xyz = self._xyz[selected_pts_mask]
 
         new_refl_strength = self._refl_strength[selected_pts_mask]   # #
         new_metalness = self._metalness[selected_pts_mask]   # #
         new_roughness = self._roughness[selected_pts_mask]   # #
+        # 新增 shadow
+        new_shadow = self._shadow[selected_pts_mask]  # shadow/occlusion
         new_ori_color = self._ori_color[selected_pts_mask]   # #
         new_diffuse_color = self._diffuse_color[selected_pts_mask]   # #
         new_normal1 = self._normal1[selected_pts_mask]       # #
@@ -1072,16 +1134,17 @@ class GaussianModel:
 
         new_features_dc = self._features_dc[selected_pts_mask]
         new_features_rest = self._features_rest[selected_pts_mask]
-        
+
         new_indirect_dc = self._indirect_dc[selected_pts_mask]
         new_indirect_rest = self._indirect_rest[selected_pts_mask]
         new_indirect_asg = self._indirect_asg[selected_pts_mask]
-        
+
         new_opacities = self._opacity[selected_pts_mask]
         new_scaling = self._scaling[selected_pts_mask]
         new_rotation = self._rotation[selected_pts_mask]
-
-        self.densification_postfix(new_xyz, new_refl_strength, new_metalness, new_roughness, new_ori_color, new_diffuse_color, new_features_dc, new_features_rest, new_indirect_dc, new_indirect_asg, new_indirect_rest, new_opacities, new_scaling, new_rotation, new_normal1, new_normal2)
+        # self.densification_postfix(new_xyz, new_refl_strength, new_metalness, new_roughness, new_ori_color, new_diffuse_color, new_features_dc, new_features_rest, new_indirect_dc, new_indirect_asg, new_indirect_rest, new_opacities, new_scaling, new_rotation, new_normal1, new_normal2)
+        # 新增 shadow
+        self.densification_postfix(new_xyz, new_refl_strength, new_metalness, new_roughness, new_shadow, new_ori_color, new_diffuse_color, new_features_dc, new_features_rest, new_indirect_dc, new_indirect_asg, new_indirect_rest, new_opacities, new_scaling, new_rotation, new_normal1, new_normal2)
 
     def densify_and_prune(self, max_grad, min_opacity, extent, max_screen_size):
         grads = self.xyz_gradient_accum / self.denom

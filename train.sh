@@ -57,7 +57,7 @@
 #     --lambda_normal_smooth 0.45 \
 #     -r 2
 
-python train.py -s ../kitchen_bsdf \
+python train.py -s ../dataset/kitchen_bsdf \
     --eval \
     --iterations 20000 \
     --indirect_from_iter 10000 \

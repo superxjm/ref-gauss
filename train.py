@@ -361,10 +361,17 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 roughness_loss = lambda_roughness * (roughness_error).mean()
                 total_loss += roughness_loss
 
+            if 'shadow_map' in render_pkg:
+                rend_shadow = render_pkg['shadow_map']
+                shadow_error = torch.abs(1 - rend_shadow)
+                lambda_shadow = getattr(opt, "lambda_shadow", 0.005)
+                shadow_loss = lambda_shadow * (shadow_error).mean()
+                total_loss += shadow_loss
+
                  # Diffuse-Albedo Loss 和 Albedo Gradient Loss
             if gt_albedo is not None and gt_albedo is not False and (not initial_stage):
                 diffuse_map = render_pkg['diffuse_map']  # [3, H, W]
-                # shadow_map = render_pkg['shadow_map']    # [1, H, W]
+                shadow_map = render_pkg['shadow_map']    # [1, H, W]
                 albedo_map = render_pkg['albedo_map']  # [3, H, W]
                 rend_normal = render_pkg['rend_normal']  # [3, H, W]
 
@@ -433,17 +440,15 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                     
                     # save_image(normal_for_envmap_vis, os.path.join(model_path, f"debug_normal_for_envmap_iter{iteration}.png"))
 
-
-                # 计算 base_color = render_albedo * env_diffuse * shadow
-                # pseudo_basecolor = render_albedo * env_diffuse * shadow_map
-                pseudo_basecolor = albedo_map * env_diffuse
+                pseudo_basecolor = albedo_map * env_diffuse * shadow_map
+                # pseudo_basecolor = albedo_map * env_diffuse
                 if iteration % 1000 == 0 and (not initial_stage):
                     pseudo_basecolor_vis = pseudo_basecolor.detach().cpu()
                     pseudo_basecolor_vis = linear_to_srgb(pseudo_basecolor_vis)
                     save_image(pseudo_basecolor_vis, os.path.join(model_path, f"debug_pseudo_basecolor_iter{iteration}.png"))
 
                 # Loss 1: Diffuse-Albedo L1 Loss
-                lambda_diffuse_albedo = getattr(opt, "lambda_diffuse_albedo", 5.0)
+                lambda_diffuse_albedo = getattr(opt, "lambda_diffuse_albedo", 0.05)
                 diffuse_albedo_loss = F.l1_loss(diffuse_map, pseudo_basecolor)
                 total_loss += lambda_diffuse_albedo * diffuse_albedo_loss
 
@@ -671,7 +676,8 @@ def save_training_vis(viewpoint_cam, gaussians, background, render_fn, pipe, opt
                 render_pkg["rend_alpha"].repeat(3, 1, 1),  
                 visualize_depth(render_pkg["surf_depth"]),  
                 render_pkg["rend_normal"] * 0.5 + 0.5,  
-                render_pkg["surf_normal"] * 0.5 + 0.5,  
+                render_pkg["surf_normal"] * 0.5 + 0.5, 
+                render_pkg["shadow_map"].repeat(3, 1, 1), 
                 error_map, 
             ]
             if opt.indirect:

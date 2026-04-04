@@ -285,11 +285,39 @@ class EnvLight(torch.nn.Module):
         return torch.sigmoid(light) * 10.0
 
 class MultiEnvLight(torch.nn.Module):
-    def __init__(self, centers, k=4, path=None, device=None, scale=1.0, min_res=16, max_res=128, min_roughness=0.08, max_roughness=0.5, trainable=False):
+    def __init__(self, centers, k=4, grid_res=None, grid_min=None, grid_max=None, path=None, device=None, scale=1.0, min_res=16, max_res=128, min_roughness=0.08, max_roughness=0.5, trainable=False):
+    # def __init__(self, centers, k=4, path=None, device=None, scale=1.0, min_res=16, max_res=128, min_roughness=0.08, max_roughness=0.5, trainable=False):
         super().__init__()
         self.k = k
         # 中心为 buffer
         self.register_buffer("centers", centers)
+
+        if grid_res is None:
+            unique_x = torch.unique(centers[:, 0])
+            unique_y = torch.unique(centers[:, 1])
+            unique_z = torch.unique(centers[:, 2])
+            grid_res = torch.tensor([unique_x.numel(), unique_y.numel(), unique_z.numel()], device=centers.device, dtype=torch.long)
+        else:
+            grid_res = torch.as_tensor(grid_res, device=centers.device, dtype=torch.long)
+
+        if grid_min is None:
+            grid_min = centers.amin(dim=0)
+        else:
+            grid_min = torch.as_tensor(grid_min, device=centers.device, dtype=centers.dtype)
+
+        if grid_max is None:
+            grid_max = centers.amax(dim=0)
+        else:
+            grid_max = torch.as_tensor(grid_max, device=centers.device, dtype=centers.dtype)
+
+        self.register_buffer("grid_res", grid_res)
+        self.register_buffer("grid_min", grid_min)
+        self.register_buffer("grid_max", grid_max)
+
+        expected_probes = int(torch.prod(self.grid_res).item())
+        if expected_probes != centers.shape[0]:
+            raise ValueError(f"grid_res {self.grid_res.tolist()} expects {expected_probes} probes, but got {centers.shape[0]}")
+
         # 创建 N 个EnvLight 实例 
         """
         self.lights = torch.nn.ModuleList([
@@ -311,6 +339,74 @@ class MultiEnvLight(torch.nn.Module):
     def build_mips(self):
         # 直接调用，不再需要循环
         self.light.build_mips()
+
+    def _compute_trilinear_corners(self, xyz_flat):
+        res = self.grid_res
+        coord_max = (res - 1).to(dtype=xyz_flat.dtype)
+
+        span = (self.grid_max - self.grid_min).clamp_min(1e-6)
+        coord = (xyz_flat - self.grid_min) / span * coord_max
+        coord = torch.clamp(coord, min=0.0)
+        coord = torch.minimum(coord, coord_max)
+
+        i0 = torch.floor(coord).to(torch.long)
+        i1 = torch.minimum(i0 + 1, res - 1)
+        t = coord - i0.to(dtype=coord.dtype)
+
+        single_axis = (res == 1)
+        if torch.any(single_axis):
+            t[:, single_axis] = 0.0
+            i0[:, single_axis] = 0
+            i1[:, single_axis] = 0
+
+        stride_x = res[1] * res[2]
+        stride_y = res[2]
+
+        corner_indices = []
+        corner_weights = []
+        for ox in (0, 1):
+            ix = i0[:, 0] if ox == 0 else i1[:, 0]
+            wx = (1.0 - t[:, 0]) if ox == 0 else t[:, 0]
+            for oy in (0, 1):
+                iy = i0[:, 1] if oy == 0 else i1[:, 1]
+                wy = (1.0 - t[:, 1]) if oy == 0 else t[:, 1]
+                for oz in (0, 1):
+                    iz = i0[:, 2] if oz == 0 else i1[:, 2]
+                    wz = (1.0 - t[:, 2]) if oz == 0 else t[:, 2]
+                    corner_indices.append(ix * stride_x + iy * stride_y + iz)
+                    corner_weights.append(wx * wy * wz)
+
+        corner_indices = torch.stack(corner_indices, dim=1)
+        corner_weights = torch.stack(corner_weights, dim=1)
+        corner_weights = corner_weights / corner_weights.sum(dim=1, keepdim=True).clamp_min(1e-8)
+        return corner_indices, corner_weights
+
+    def _sample_selected_probes(self, l_flat, mode, r_flat, probe_ids):
+        n_samples = l_flat.shape[0]
+        n_selected = probe_ids.shape[0]
+
+        l_input = l_flat.view(1, 1, -1, 3).expand(n_selected, -1, -1, -1).contiguous()
+
+        if mode == "diffuse":
+            light = dr.texture(self.light.diffuse[probe_ids], l_input, filter_mode='linear', boundary_mode='cube')
+        elif mode == "pure_env":
+            light = dr.texture(self.light.base[probe_ids], l_input, filter_mode='linear', boundary_mode='cube')
+        else:
+            if r_flat is None:
+                raise ValueError("roughness is required when querying specular environment light")
+            r_input = r_flat.view(1, 1, -1, 1).expand(n_selected, -1, -1, -1).contiguous()
+            miplevel = self.light.get_mip(r_input)
+            light = dr.texture(
+                self.light.specular[0][probe_ids],
+                l_input,
+                mip=[m[probe_ids] for m in self.light.specular[1:]],
+                mip_level_bias=miplevel[..., 0],
+                filter_mode='linear-mipmap-linear',
+                boundary_mode='cube'
+            )
+
+        light = light.view(n_selected, n_samples, 3)
+        return torch.sigmoid(light) * 10.0
     
     def __call__(self, l, mode=None, roughness=None, xyz=None):
         # 增加 xyz 计算距离权重
@@ -325,33 +421,35 @@ class MultiEnvLight(torch.nn.Module):
         r_flat = None
         if roughness is not None:
             r_flat = roughness.view(-1, 1)
-            
-        n_probes = self.centers.shape[0]
 
-        # 计算像素到每个中心的距离
-        dists = torch.cdist(xyz_flat, self.centers)  # [n_pixels, n_probes]
+        # n_probes = self.centers.shape[0]
+        # # 计算像素到每个中心的距离
+        # dists = torch.cdist(xyz_flat, self.centers)  # [n_pixels, n_probes]
+        # # 找到最近的 k 个中心
+        # actyal_k = min(self.k, n_probes)
+        # topk_dists, topk_indices = torch.topk(dists, k=actyal_k, dim=1, largest=False) 
+        # # 计算权重（距离倒数的平方）
+        # weights = 1.0 / (topk_dists。pow(2) + 1e-6)
+        # weights = weights / weights.sum(dim=1, keepdim=True)  # [n_pixels, k] 
+        # # 使用 torch.gather 提取 Top-k 哥探针对应的颜色
+        # # gather_indices 需要与all_colors 维度一致：[]n_probes, k, 3]
+        # gather_indices = topk_indices.unsqueeze(-1).expand(-1, -1, 3)  
+        # topk_colors = torch.gather(all_colors, 1, gather_indices)  # [n_pixels, k, 3]
+        # # 乘以权重并对 k 维度求和（混合）
+        # weights = weights.unsqueeze(-1)  # [n_pixels, k, 1]
+        # output = (topk_colors * weights).sum(dim=1)  # [n_pixels, 3]
 
-        # 找到最近的 K 个探针
-        actual_k = min(self.k, n_probes)
-        topk_dists, topk_indices = torch.topk(dists, k=actual_k, dim=1, largest=False)
 
-        # 计算权重（距离的倒数的平方）
-        weights = 1.0 / (topk_dists.pow(2) + 1e-6)  # 防止除零 
-        weights = weights / weights.sum(dim=1, keepdim=True)  # [n_pixels, K]
+        # 根据 xyz 落到规则网格后做三线性插值，最多使用 8 个角点 probe
+        corner_indices, corner_weights = self._compute_trilinear_corners(xyz_flat)
 
-        # 一次性调用 EnvLight 算出所有探针的结果
-        all_colors = self.light(l_flat, mode, r_flat) 
-        
-        # 把形状变换为 [n_pixels, n_probes, 3]，方便针对每个像素按探针 index 提取
-        all_colors = all_colors.permute(1, 0, 2)
-        
-        # 使用 torch.gather 提取 Top-K 个探针对应的颜色
-        # gather_indices 需要与 all_colors 维度一致: [n_pixels, K, 3]
-        gather_indices = topk_indices.unsqueeze(-1).expand(-1, -1, 3)
-        topk_colors = torch.gather(all_colors, 1, gather_indices) # 得到形状 [n_pixels, K, 3]
+        unique_probe_ids, inverse = torch.unique(corner_indices.reshape(-1), sorted=True, return_inverse=True)
+        sampled_colors = self._sample_selected_probes(l_flat, mode, r_flat, unique_probe_ids)
 
-        # 乘以权重并对 K 维度求和 (混合)
-        weights = weights.unsqueeze(-1) # [n_pixels, K, 1]
-        output = (topk_colors * weights).sum(dim=1) # 得到形状 [n_pixels, 3]
+        sampled_colors = sampled_colors.permute(1, 0, 2)  # [n_pixels, n_unique, 3]
+        mapped_indices = inverse.view(corner_indices.shape)
+        corner_colors = torch.gather(sampled_colors, 1, mapped_indices.unsqueeze(-1).expand(-1, -1, 3))
+
+        output = (corner_colors * corner_weights.unsqueeze(-1)).sum(dim=1)
 
         return output.reshape(input_shape)  
