@@ -72,6 +72,20 @@ class ModelParams(ParamGroup):
         self.envmap_min_roughness = 0.08
         self.relight = False
 
+        # MaterialMLP Settings
+        self.mlp_material_feature_dim = 0
+        self.mlp_material_encoding = "hash"
+        self.mlp_material_hidden_dim = 64
+        self.mlp_material_num_hidden_layers = 2
+        self.mlp_material_pixel_stride = 1
+        self.mlp_material_hash_n_levels = 32
+        self.mlp_material_hash_n_features_per_level = 2
+        self.mlp_material_hash_log2_hashmap_size = 19
+        self.mlp_material_hash_base_resolution = 16
+        self.mlp_material_hash_finest_resolution = None
+        self.mlp_material_hash_per_level_scale = 1.3
+        self.mlp_material_hash_bbox_pad = 0.1
+
         super().__init__(parser, "Loading Parameters", sentinel)
 
     def extract(self, args):
@@ -188,6 +202,47 @@ class OptimizationParams(ParamGroup):
         self.sdf_trunc = -1.0
         self.mesh_res = 512
         self.num_cluster = 1
+
+        # Flash settings
+        self.flash = False
+        self.flash_from_iter = 20000
+        self.flash_only = True       # True: after flash_from_iter, only use flash views
+        self.flash_mlp_lr = 0.001
+        self.lambda_flash = 1.0
+        self.use_flash_indirect = True  # 是否在 render_surfel_flash 中加入预计算间接光
+        self.flash_indirect_from_iter = 30000  # 闪光灯间接光启用迭代次数 (预计算+加载缓存)
+        self.flash_indirect_trace_eps = 0.05  # 仅用于间接光(dif/spec)二次光线起点偏移
+        self.flash_reproj_vis_eps_abs = 5e-3
+        self.flash_reproj_vis_eps_rel = 5e-3
+        self.flash_clean_legacy_precomp_names = True
+        self.flash_debug_dump_dir = ""  # 若非空: 导出 world_pos 点云与 reflect_dir 箭头
+        self.flash_debug_arrow_stride = 32
+        self.flash_debug_arrow_scale = 0.02
+        self.debug_flash_use_cached_env_render = False
+        self.debug_flash_cache_on_cpu = True
+        self.flash_training_mode = "auto"  # auto|single_flash|dual_flash_nonflash|single_mixed
+        self.flash_batch_mode = "dual"  # legacy: 与 flash_only 一起在 flash_training_mode=auto 时映射到旧逻辑
+        self.use_flash_nearest_nonflash = False  # 仅在 dual_flash_nonflash 模式生效
+        self.diffuse_mode = "ngp"  # ngp|2dgs
+        self.lambda_ngp_diffuse = 1
+
+        self.mlp_material_lr_init = 0.001
+        self.mlp_material_lr_final = 0.0001
+        self.mlp_material_lr_delay_mult = 0.1
+        self.mlp_material_lr_max_steps = 40_000
+        self.mlp_material_voxel_size = 0.001
+
+        # Ref-alignment / ablation switches (use 0/1 so they can be toggled from CLI)
+        self.use_ref_shadow = 1
+        self.use_ref_albedo_grad_loss = 1
+        self.use_ref_diffuse_albedo_loss = 1
+        self.use_ref_albedo_losses_on_flash = 1
+        self.use_ref_env_trilinear = 1
+        self.use_ref_fixed_probe_grid = 1
+        self.ref_fixed_probe_grid_res = [3, 2, 1]
+        self.lambda_diffuse_albedo = 0.05
+        self.lambda_albedo_grad = 0.5
+        self.lambda_shadow = 0.005
 
 
         super().__init__(parser, "Optimization Parameters")

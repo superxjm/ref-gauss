@@ -50,7 +50,7 @@ def export_all_views_at_iteration(scene, render_fn, pipe, background, opt, itera
     # 2. 定义16个子文件夹的名称 (对应 render_pkg 的内容)
     # 注意：这里的顺序必须和下面 visualization_list 组装的顺序严格一致
     folder_names = [
-        "01_gt", "02_render", "03_diffuse_map", "04_specular_map",
+        "01_gt", "02_render", "03_diffuse_map_2dgs", "03_diffuse_map_ngp", "04_specular_map",
         "05_albedo_map", "06_roughness_map", "07_refl_strength", 
         "08_alpha", "09_depth", "10_rend_normal", "11_surf_normal", 
         "12_error"
@@ -84,10 +84,14 @@ def export_all_views_at_iteration(scene, render_fn, pipe, background, opt, itera
             surf_normal = torch.nn.functional.normalize(surf_normal, dim=0) 
 
             # 组装列表，顺序必须和上面的 folder_names 一一对应
+            render_pkg["diffuse_map_2dgs"] = linear_to_srgb(render_pkg["diffuse_map_2dgs"])
+            render_pkg["diffuse_map_ngp"] = linear_to_srgb(render_pkg["diffuse_map_ngp"])
+            render_pkg["specular_map"] = linear_to_srgb(render_pkg["specular_map"])
             visualization_list = [
                 gt_image,                                    
                 render_pkg["render"],                        
-                render_pkg.get("diffuse_map", dummy_3ch),   
+                render_pkg.get("diffuse_map_2dgs", dummy_3ch),   
+                render_pkg.get("diffuse_map_ngp", dummy_3ch),  
                 render_pkg.get("specular_map", dummy_3ch),  
                 render_pkg.get("albedo_map", dummy_3ch),       
                 render_pkg.get("roughness_map", dummy_1ch).repeat(3, 1, 1),  
@@ -165,6 +169,8 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     gaussians = GaussianModel(dataset.sh_degree)
     set_gaussian_para(gaussians, opt, vol=(opt.volume_render_until_iter > opt.init_until_iter)) # #
     scene = Scene(dataset, gaussians)  # init all parameters(pos, scale, rot...) from pcds
+    print('ensure_material_mlp')
+    gaussians.ensure_material_mlp(training_args=opt, raise_on_fail=False)
     gaussians.training_setup(opt)
     if checkpoint:
         (model_params, first_iter) = torch.load(checkpoint)
@@ -232,6 +238,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         if not viewpoint_stack:
             viewpoint_stack = scene.getTrainCameras().copy()
         viewpoint_cam = viewpoint_stack.pop(randint(0, len(viewpoint_stack) - 1))
+        # print(f'training camera num: {len(scene.getTrainCameras())}')
 
         # Set render
         render = select_render_method(iteration, opt, initial_stage)
@@ -368,12 +375,17 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 shadow_loss = lambda_shadow * (shadow_error).mean()
                 total_loss += shadow_loss
 
-                 # Diffuse-Albedo Loss 和 Albedo Gradient Loss
+            # Diffuse-Albedo Loss 和 Albedo Gradient Loss
             if gt_albedo is not None and gt_albedo is not False and (not initial_stage):
-                diffuse_map = render_pkg['diffuse_map']  # [3, H, W]
+                diffuse_map = render_pkg['diffuse_map_2dgs']  # [3, H, W]
                 shadow_map = render_pkg['shadow_map']    # [1, H, W]
                 albedo_map = render_pkg['albedo_map']  # [3, H, W]
                 rend_normal = render_pkg['rend_normal']  # [3, H, W]
+
+                diffuse_map_ngp = render_pkg['diffuse_map_ngp']  # [3, H, W]
+                lambda_diffuse_ngp = getattr(opt, "lambda_diffuse_ngp", 0.1)
+                diffuse_ngp_loss = F.l1_loss(diffuse_map, diffuse_map_ngp)
+                total_loss += lambda_diffuse_ngp * diffuse_ngp_loss
 
                 # 获取 envmap
                 envmap_2 = gaussians.get_envmap_2
@@ -662,13 +674,15 @@ def save_training_vis(viewpoint_cam, gaussians, background, render_fn, pipe, opt
                 error_map 
             ]
         else:
-            render_pkg["diffuse_map"] = linear_to_srgb(render_pkg["diffuse_map"])
+            render_pkg["diffuse_map_2dgs"] = linear_to_srgb(render_pkg["diffuse_map_2dgs"])
+            render_pkg["diffuse_map_ngp"] = linear_to_srgb(render_pkg["diffuse_map_ngp"])
             render_pkg["specular_map"] = linear_to_srgb(render_pkg["specular_map"])
             render_pkg["albedo_map"] = linear_to_srgb(render_pkg["albedo_map"])
             visualization_list = [
                 viewpoint_cam.original_image.cuda(),  
                 render_pkg["render"],  
-                render_pkg["diffuse_map"],
+                render_pkg["diffuse_map_2dgs"],
+                render_pkg["diffuse_map_ngp"],
                 render_pkg["specular_map"],
                 render_pkg["albedo_map"],  
                 render_pkg["roughness_map"].repeat(3, 1, 1),

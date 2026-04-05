@@ -64,8 +64,6 @@ def compute_2dgs_normal_and_regularizations(allmap, viewpoint_camera, pipe):
         'surf_normal': surf_normal
     }
 
-
-
 def render_initial(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, scaling_modifier = 1.0, override_color = None, srgb = False, opt=None):
 
     # Create zero tensor. We will use it to make pytorch return gradients of the 2D (screen-space) means
@@ -191,8 +189,38 @@ def render_initial(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.
 
     return rets
 
+def get_diffuse_blend_ratio(iteration):
+    if iteration >= 15000:
+        return 0.2
+    if iteration >= 10000:
+        return 0.5
+    return 1.0
 
+def get_world_pos(depth, K, viewmat):
+    """
+    Per-pixel world-space XYZ from depth map, intrinsics, and extrinsics.
 
+    Args:
+        depth:   [1, H, W]  depth in camera-space Z
+        K:       [3, 3]     intrinsics matrix
+        viewmat: [4, 4]     world-to-camera transform
+    Returns:
+        world_points: [H, W, 3]
+    """
+    H, W = depth.shape[1:]
+    y, x = torch.meshgrid(
+        torch.arange(H, device=depth.device),
+        torch.arange(W, device=depth.device),
+        indexing="ij"
+    )
+    z = depth[0]
+    x_cam = (x - K[0, 2]) * z / K[0, 0]
+    y_cam = (y - K[1, 2]) * z / K[1, 1]
+    ones = torch.ones_like(z)
+    cam_points = torch.stack([x_cam, y_cam, z, ones], dim=-1)  # [H, W, 4]
+    cam2world = torch.inverse(viewmat)
+    world_points = cam_points @ cam2world.T
+    return world_points[..., :3]  # [H, W, 3]
 
 def render_surfel(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, scaling_modifier = 1.0, override_color = None, srgb = False, opt=None):
 
@@ -328,7 +356,7 @@ def render_surfel(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.T
         cov3D_precomp = cov3D_precomp,
     )
 
-    diffuse = rendered_image
+    diffuse_2dgs = rendered_image
     refl_strength = rendered_features[:1]
     roughness = rendered_features[1:2]
     albedo = rendered_features[2:5]
@@ -344,6 +372,85 @@ def render_surfel(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.T
     surf_depth = regularizations['surf_depth']
     surf_normal = regularizations['surf_normal']
 
+    ##############################################
+    use_ngp_diffuse = True
+    material_mlp = getattr(pc, "mlp_material", None)
+    diffuse_ngp = None
+    diffuse_merge = diffuse_2dgs
+    diffuse_blend_ratio = 1.0
+    if use_ngp_diffuse and material_mlp is not None:
+        try:
+            pc._update_material_hash_bbox_from_xyz()
+        except Exception:
+            pass
+
+        focal_x = imW / (2.0 * tanfovx)
+        focal_y = imH / (2.0 * tanfovy)
+        K = torch.tensor(
+            [[focal_x, 0.0, imW / 2.0],
+             [0.0, focal_y, imH / 2.0],
+             [0.0, 0.0, 1.0]],
+            device=surf_depth.device,
+            dtype=surf_depth.dtype,
+        )
+
+        surf_depth_clean = torch.nan_to_num(surf_depth, nan=0.0, posinf=0.0, neginf=0.0)
+        world_pos = get_world_pos(
+            surf_depth_clean,
+            K,
+            viewpoint_camera.world_view_transform.transpose(0, 1),
+        ).permute(2, 0, 1).contiguous()
+
+        eps = 1e-6
+        stride = int(getattr(pc, "mlp_material_pixel_stride", 1) or 1)
+        stride = max(stride, 1)
+        if stride > 1:
+            world_pos_q = world_pos[:, ::stride, ::stride]
+            surf_depth_q = surf_depth_clean[:, ::stride, ::stride]
+            render_alpha_q = render_alpha[:, ::stride, ::stride]
+            Hq, Wq = surf_depth_q.shape[-2], surf_depth_q.shape[-1]
+            wp = world_pos_q.permute(1, 2, 0).reshape(-1, 3)
+            valid_wp = (surf_depth_q.reshape(-1) > eps) & (render_alpha_q.reshape(-1) > eps)
+        else:
+            Hq, Wq = imH, imW
+            wp = world_pos.permute(1, 2, 0).reshape(-1, 3)
+            valid_wp = (surf_depth_clean.reshape(-1) > eps) & (render_alpha.reshape(-1) > eps)
+
+        if valid_wp.any():
+            # Keep the NGP supervision branch geometry-neutral: only train the material MLP.
+            xyz_valid = wp[valid_wp].detach()
+            chunk = 131072
+            n_valid = int(xyz_valid.shape[0])
+            albedo_valid = torch.empty((n_valid, 3), device=xyz_valid.device, dtype=xyz_valid.dtype)
+            for start in range(0, n_valid, chunk):
+                end = min(start + chunk, n_valid)
+                albedo_chunk, _, _ = material_mlp(xyz_valid[start:end], None)
+                albedo_valid[start:end] = albedo_chunk
+
+            albedo_full = torch.zeros((wp.shape[0], 3), device=wp.device, dtype=wp.dtype)
+            idx = valid_wp.nonzero(as_tuple=False).view(-1)
+            if idx.numel() > 0:
+                albedo_full = albedo_full.index_copy(0, idx, albedo_valid)
+
+            albedo_ngp_q = albedo_full.view(Hq, Wq, 3).permute(2, 0, 1).contiguous()
+            if stride > 1 and (Hq != imH or Wq != imW):
+                albedo_ngp = F.interpolate(
+                    albedo_ngp_q.unsqueeze(0),
+                    size=(imH, imW),
+                    mode="bilinear",
+                    align_corners=False,
+                ).squeeze(0)
+            else:
+                albedo_ngp = albedo_ngp_q
+
+            diffuse_ngp = albedo_ngp
+            # print(albedo_ngp)
+            # input()
+            # current_iteration = int(getattr(opt, "current_iteration", 0) or 0) if opt is not None else 0
+            # diffuse_blend_ratio = float(get_diffuse_blend_ratio(current_iteration))
+            # diffuse_merge = diffuse_blend_ratio * diffuse_2dgs + (1.0 - diffuse_blend_ratio) * diffuse_ngp
+    ##############################################
+
     # Use normal map computed in 2DGS pipeline to perform reflection query
     render_normal  = torch.nn.functional.normalize(render_normal , dim=0) 
     normal_map = render_normal.permute(1,2,0)
@@ -355,7 +462,7 @@ def render_surfel(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.T
 
     # Integrate the final image
     # final_image = (1-refl_strength) * base_color + specular 
-    final_image = diffuse + specular 
+    final_image = diffuse_merge + specular 
     
     # Transform linear rgb to srgb with nonlinearly distribution between 0 to 1
     if srgb: 
@@ -371,7 +478,8 @@ def render_surfel(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.T
     # They will be excluded from value updates used in the splitting criteria.
     results =  {"render": final_image,
                 "refl_strength_map": refl_strength,
-                "diffuse_map": diffuse,
+                "diffuse_map_2dgs": diffuse_2dgs,
+                "diffuse_map_ngp": diffuse_ngp,
                 "specular_map": specular,
                 "albedo_map": albedo,
                 "roughness_map": roughness,
