@@ -67,7 +67,27 @@
 #     --lambda_normal_smooth 0.45 \
 #     -r 2
 
-python train.py -s ../dataset/livingroom_shelf_bsdf \
+# python train.py -s ../dataset/livingroom_shelf_bsdf \
+#     --eval \
+#     --iterations 20000 \
+#     --indirect_from_iter 10000 \
+#     --volume_render_until_iter 0 \
+#     --initial 1 \
+#     --init_until_iter 6000 \
+#     --lambda_normal_smooth 0.45 \
+#     -r 2
+
+# python train.py -s ../dataset/livingroom_sofa_bsdf \
+#     --eval \
+#     --iterations 20000 \
+#     --indirect_from_iter 10000 \
+#     --volume_render_until_iter 0 \
+#     --initial 1 \
+#     --init_until_iter 6000 \
+#     --lambda_normal_smooth 0.45 \
+#     -r 2
+
+python train.py -s ../dataset/kitchen_bsdf \
     --eval \
     --iterations 20000 \
     --indirect_from_iter 10000 \

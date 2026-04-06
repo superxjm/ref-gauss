@@ -379,10 +379,10 @@ def render_surfel(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.T
     diffuse_merge = diffuse_2dgs
     diffuse_blend_ratio = 1.0
     if use_ngp_diffuse and material_mlp is not None:
-        try:
-            pc._update_material_hash_bbox_from_xyz()
-        except Exception:
-            pass
+        # try:
+        #     pc._update_material_hash_bbox_from_xyz()
+        # except Exception:
+        #     pass
 
         focal_x = imW / (2.0 * tanfovx)
         focal_y = imH / (2.0 * tanfovy)
@@ -444,11 +444,9 @@ def render_surfel(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.T
                 albedo_ngp = albedo_ngp_q
 
             diffuse_ngp = albedo_ngp
-            # print(albedo_ngp)
-            # input()
-            # current_iteration = int(getattr(opt, "current_iteration", 0) or 0) if opt is not None else 0
-            # diffuse_blend_ratio = float(get_diffuse_blend_ratio(current_iteration))
-            # diffuse_merge = diffuse_blend_ratio * diffuse_2dgs + (1.0 - diffuse_blend_ratio) * diffuse_ngp
+            current_iteration = int(getattr(opt, "current_iteration", 0) or 0) if opt is not None else 0
+            diffuse_blend_ratio = float(get_diffuse_blend_ratio(current_iteration))
+            diffuse_merge = diffuse_blend_ratio * diffuse_2dgs + (1.0 - diffuse_blend_ratio) * diffuse_ngp
     ##############################################
 
     # Use normal map computed in 2DGS pipeline to perform reflection query

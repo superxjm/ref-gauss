@@ -84,7 +84,7 @@ class MaterialMLP(nn.Module):
         self.tcnn_mlp = tcnn.NetworkWithInputEncoding(3, 5, hash_encoding, hash_network)
 
         # self.tcnn_mlp = tcnn.NetworkWithInputEncoding(3, 64, hash_encoding, hash_network)
-        # 再把 [hash_feat(64) + voxel内相对位置(3)] concat，用一个小 MLP 输出 5 维材质
+        # # 再把 [hash_feat(64) + voxel内相对位置(3)] concat，用一个小 MLP 输出 5 维材质
         # head_hidden = int(min(64, self.hidden_dim))
         # self.tcnn_post_mlp = nn.Sequential(
         #     nn.Linear(64 + 3, head_hidden),
@@ -95,6 +95,35 @@ class MaterialMLP(nn.Module):
         # )
 
         print(f"MaterialMLP: encoding={self.encoding}, feature_dim={self.feature_dim}")
+
+    # def forward(self, xyz: torch.Tensor, feature: torch.Tensor | None = None) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    #     vs = 0.015#self.voxel_size
+
+    #     origin = self._hash_bbox_min.to(xyz.device, xyz.dtype)
+    #     vidx = torch.floor((xyz - origin) / vs)
+    #     xyz_center = (vidx + 0.5) * vs + origin
+
+    #     # voxel 内相对位置 → [-1,1]
+    #     relpos = (xyz - xyz_center) / (vs * 0.5)
+
+    #     # hash 输入 → [-1,1]
+    #     extent = (self._hash_bbox_max - self._hash_bbox_min).clamp_min(1e-6)
+    #     pos_norm = (xyz_center - self._hash_bbox_min) / extent
+    #     pos_hash = pos_norm * 2.0 - 1.0
+
+    #     feat64 = self.tcnn_mlp(pos_hash)
+
+    #     y = self.tcnn_post_mlp(torch.cat([feat64, relpos], dim=1))
+
+    #     # y = self.tcnn_mlp(pos_hash)
+
+    #     albedo = torch.sigmoid(y[:, 0:3])
+    #     roughness = torch.sigmoid(y[:, 3:4])
+    #     roughness = self.roughness_min + (1.0 - self.roughness_min) * roughness
+    #     metallic = torch.sigmoid(y[:, 4:5])
+    #     if self.freeze_albedo:
+    #         albedo = albedo.detach()
+    #     return albedo, roughness, metallic
 
     def forward(self, xyz: torch.Tensor, feature: torch.Tensor | None = None) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Forward.

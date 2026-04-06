@@ -165,8 +165,34 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         ENV_RADIUS = opt.env_scope_radius
         REFL_MSK_LOSS_W = 0.4
 
-
-    gaussians = GaussianModel(dataset.sh_degree)
+    # print(dataset.mlp_material_feature_dim)
+    # print(dataset.mlp_material_encoding)
+    # print(dataset.mlp_material_hidden_dim)
+    # print(dataset.mlp_material_num_hidden_layers)
+    # print(dataset.mlp_material_hash_n_levels)
+    # print(dataset.mlp_material_hash_n_features_per_level)
+    # print(dataset.mlp_material_hash_log2_hashmap_size)
+    # print(dataset.mlp_material_hash_base_resolution)
+    # print(dataset.mlp_material_hash_finest_resolution)
+    # print(dataset.mlp_material_hash_per_level_scale)
+    # print(dataset.mlp_material_hash_bbox_pad)
+    # print(opt.mlp_material_voxel_size)
+    # input()
+    gaussians = GaussianModel(
+        dataset.sh_degree,
+        mlp_material_feature_dim=dataset.mlp_material_feature_dim,
+        mlp_material_encoding=dataset.mlp_material_encoding,
+        mlp_material_hidden_dim=dataset.mlp_material_hidden_dim,
+        mlp_material_num_hidden_layers=dataset.mlp_material_num_hidden_layers,
+        mlp_material_hash_n_levels=dataset.mlp_material_hash_n_levels,
+        mlp_material_hash_n_features_per_level=dataset.mlp_material_hash_n_features_per_level,
+        mlp_material_hash_log2_hashmap_size=dataset.mlp_material_hash_log2_hashmap_size,
+        mlp_material_hash_base_resolution=dataset.mlp_material_hash_base_resolution,
+        mlp_material_hash_finest_resolution=dataset.mlp_material_hash_finest_resolution,
+        mlp_material_hash_per_level_scale=dataset.mlp_material_hash_per_level_scale,
+        mlp_material_hash_bbox_pad=dataset.mlp_material_hash_bbox_pad,
+        mlp_material_voxel_size=opt.mlp_material_voxel_size
+    )
     set_gaussian_para(gaussians, opt, vol=(opt.volume_render_until_iter > opt.init_until_iter)) # #
     scene = Scene(dataset, gaussians)  # init all parameters(pos, scale, rot...) from pcds
     print('ensure_material_mlp')
@@ -213,8 +239,8 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         gaussians.update_learning_rate(iteration)
 
         # Increase SH levels every 2000 iterations
-        if iteration > opt.feature_rest_from_iter and iteration % 1000 == 0:
-            gaussians.oneupSHdegree()
+        # if iteration > opt.feature_rest_from_iter and iteration % 1000 == 0:
+        #     gaussians.oneupSHdegree()
         
         # Control the init stage
         if iteration > opt.init_until_iter:
@@ -383,7 +409,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 rend_normal = render_pkg['rend_normal']  # [3, H, W]
 
                 diffuse_map_ngp = render_pkg['diffuse_map_ngp']  # [3, H, W]
-                lambda_diffuse_ngp = getattr(opt, "lambda_diffuse_ngp", 0.1)
+                lambda_diffuse_ngp = getattr(opt, "lambda_ngp_diffuse", 1.0)
                 diffuse_ngp_loss = F.l1_loss(diffuse_map, diffuse_map_ngp)
                 total_loss += lambda_diffuse_ngp * diffuse_ngp_loss
 
